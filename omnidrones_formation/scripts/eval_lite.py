@@ -35,6 +35,7 @@ def main():
     p.add_argument("--goal_min", type=float, default=8.0)
     p.add_argument("--goal_max", type=float, default=14.0)
     p.add_argument("--hidden_size", type=int, default=256)
+    p.add_argument("--input_norm", default="running", choices=["running", "layernorm"])
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--out", default="runs/lite_eval")
     p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="override FormationNavConfig fields")
@@ -49,7 +50,7 @@ def main():
     )
     base = FormationNavLite(task, args.num_envs, args.max_episode_length, seed=args.seed)
     env = TransformedEnv(base, InitTracker())
-    policy = MAPPOLSTM(dict(hidden_size=args.hidden_size), env.observation_spec, env.action_spec, env.reward_spec)
+    policy = MAPPOLSTM(dict(hidden_size=args.hidden_size, input_norm=args.input_norm), env.observation_spec, env.action_spec, env.reward_spec)
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     try:
         policy.load_checkpoint(ckpt)

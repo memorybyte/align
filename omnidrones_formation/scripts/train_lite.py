@@ -52,6 +52,7 @@ def parse():
     p.add_argument("--goal_max", type=float, default=14.0)
     p.add_argument("--train_every", type=int, default=64)
     p.add_argument("--hidden_size", type=int, default=256)
+    p.add_argument("--input_norm", default="running", choices=["running", "layernorm"])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--out", default="runs/lite")
@@ -74,7 +75,8 @@ def main():
     )
     base = FormationNavLite(task, args.num_envs, args.max_episode_length, device=args.device, seed=args.seed)
     env = TransformedEnv(base, InitTracker())
-    algo = dict(train_every=args.train_every, hidden_size=args.hidden_size, lr_decay_iters=args.iters)
+    algo = dict(train_every=args.train_every, hidden_size=args.hidden_size, lr_decay_iters=args.iters,
+                input_norm=args.input_norm)
     policy = MAPPOLSTM(algo, env.observation_spec, env.action_spec, env.reward_spec, device=args.device)
     collector = SyncDataCollector(
         env, policy, frames_per_batch=args.num_envs * args.train_every, total_frames=-1,
