@@ -148,6 +148,7 @@ def plot_episode(traj: TensorDictBase, env_idx: int, path: str, title: str = "")
     radius = info.get("obstacle_radius")[0].cpu()
     active = info.get("obstacle_active")[0].cpu() > 0.5
     phase = info.get("phase")[:T, 0].cpu()
+    route = info.get("route")[0].cpu() if "route" in info.keys() else None
     n = pos.shape[1]
     # pillars are static (their trajectory is constant), spheres move
     moving = (obs_pos[-1] - obs_pos[0]).norm(dim=-1) > 1e-4
@@ -165,6 +166,8 @@ def plot_episode(traj: TensorDictBase, env_idx: int, path: str, title: str = "")
     for i in range(n):
         ax.plot(pos[:, i, 0], pos[:, i, 1], color=colors[i], lw=1.2)
         ax.plot(pos[0, i, 0], pos[0, i, 1], "o", color=colors[i], ms=4)
+    if route is not None:
+        ax.plot(route[:, 0], route[:, 1], "--", color="tab:green", lw=1, label="formation route")
     ax.plot(slots[-1, :, 0], slots[-1, :, 1], "x", color="tab:blue", ms=7, label="final slots")
     ax.plot(pos[-1, :, 0], pos[-1, :, 1], "o", mfc="none", color="k", ms=8, label="final drones")
     ax.plot(goal[0], goal[1], "*", color="tab:red", ms=14, label="goal")

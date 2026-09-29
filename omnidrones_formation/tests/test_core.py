@@ -290,6 +290,7 @@ def test_actor_observation_is_translation_invariant():
     core.assembly += shift
     core.goal += shift
     core.obs_pos += shift
+    core.path_pts += shift
     obs_b, _ = core.observations(pos + shift, vel, heading, up, torch.zeros_like(vel))
     assert torch.allclose(obs_a, obs_b, atol=1e-4)
 
@@ -346,3 +347,61 @@ def test_obstacle_curriculum_scales_obstacle_count_and_adapts():
     core.reset(torch.arange(64))
     assert core.obs_active[:, : core.M_s].sum(1).min() >= core.cfg.num_static[0]
     assert core.difficulty == 0.0
+
+
+def test_straight_route_is_the_line_to_the_goal():
+    core, _ = make_core(num_envs=4, scenario="static")
+    for s in (0.0, 1.3, 5.0):
+        core.s_ref[:] = s
+        expected = core.assembly + core.direction * torch.minimum(torch.tensor(s), core.path_len).unsqueeze(-1)
+        torch.testing.assert_close(core.reference(), expected, atol=1e-4, rtol=0)
+    torch.testing.assert_close(core.path_len, core.straight_len)
+
+
+def _route_clearance(core):
+    """Min horizontal distance between the densely sampled route and each active pillar surface."""
+    s = torch.linspace(0, 1, 400).unsqueeze(0) * core.path_len.unsqueeze(-1)  # (E, 400)
+    pts = []
+    for k in range(s.shape[1]):
+        core.s_ref = s[:, k].contiguous()
+        pts.append(core.reference())
+    pts = torch.stack(pts, 1)[..., :2]  # (E, 400, 2)
+    d = (pts.unsqueeze(2) - core.obs_anchor[:, None, : core.M_s, :2]).norm(dim=-1) - core.obs_radius[:, None, : core.M_s]
+    d = torch.where(core.obs_active[:, None, : core.M_s], d, torch.full_like(d, float("inf")))
+    return d.min(dim=1).values.min(dim=1).values, pts  # (E,)
+
+
+def test_dp_route_avoids_inflated_pillars_and_keeps_endpoints():
+    kw = dict(num_envs=64, num_drones=4, scenario="static", num_static=(2, 4), goal_distance=(8.0, 12.0))
+    core, _ = make_core(waypoint_planner="dp", **kw)
+    clearance, pts = _route_clearance(core)
+    half_width = core.slot_offset[..., :2].norm(dim=-1).max(dim=1).values
+    # the rigid formation (half width + drone) clears every pillar in most episodes; the rest
+    # are geometrically infeasible layouts where the formation has to deform
+    ok = clearance >= half_width + core.cfg.drone_radius
+    assert ok.float().mean() >= 0.85, clearance - half_width
+    torch.testing.assert_close(pts[:, 0], core.assembly[:, :2], atol=1e-4, rtol=0)
+    torch.testing.assert_close(pts[:, -1], core.goal[:, :2], atol=1e-4, rtol=0)
+    # bounded lateral slope between planning stations
+    lat = torch.stack([-core.direction[:, 1], core.direction[:, 0]], -1)
+    off = ((core.path_pts[..., :2] - core.assembly[:, None, :2]) * lat[:, None]).sum(-1)
+    assert off.diff(dim=1).abs().max() <= core.cfg.planner_max_slope * core.cfg.planner_ds + 1e-4
+    # the straight line would have hit pillars in many of these episodes
+    straight, _ = _route_clearance(make_core(**kw)[0])
+    assert (straight < half_width + core.cfg.drone_radius).float().mean() > 0.8
+
+
+def test_perfect_tracking_on_dp_route_passes_static_pillars():
+    E = 16
+    core, start = make_core(num_envs=E, num_drones=4, scenario="static", waypoint_planner="dp", num_static=(2, 4),
+                            goal_distance=(8.0, 12.0), terminate_on_collision=False)
+    n = core.n
+    _, up = attitude(E, n)
+    for _ in range(3000):
+        core.advance()
+        core.update(core.slots().clone(), torch.zeros(E, n, 3), up, torch.zeros(E, n, core.cfg.action_dim))
+        if (core.phase == PHASE_HOLD).all():
+            break
+    assert (core.phase == PHASE_HOLD).all()
+    hit = core.stats["collisions_obstacle"].squeeze(-1) > 0
+    assert hit.float().mean() <= 0.15

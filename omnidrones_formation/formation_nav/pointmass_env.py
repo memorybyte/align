@@ -74,6 +74,7 @@ class FormationNavLite(EnvBase):
                         "obstacle_radius": UnboundedContinuousTensorSpec((M,)),
                         "obstacle_active": UnboundedContinuousTensorSpec((M,)),
                         "phase": UnboundedContinuousTensorSpec((1,)),
+                        "route": UnboundedContinuousTensorSpec((self.core.Kp, 3)),
                     }
                 ),
                 "stats": CompositeSpec({k: UnboundedContinuousTensorSpec(1) for k in STAT_KEYS}),
@@ -121,6 +122,7 @@ class FormationNavLite(EnvBase):
                     "obstacle_radius": self.core.obs_radius.clone(),
                     "obstacle_active": self.core.obs_active.float(),
                     "phase": self.core.phase.float().unsqueeze(-1),
+                    "route": self.core.path_pts.clone(),
                 },
                 "stats": {k: v.clone() for k, v in self.core.stats.items()},
             },

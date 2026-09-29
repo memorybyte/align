@@ -355,3 +355,12 @@ def test_training_and_evaluation_run_through_env_py(fn_env_module, tmp_path):
     # the dynamic spheres were moved by env.py every step
     dyn_view = next(v for v in RigidPrimView.views if "mover" in v.expr)
     assert dyn_view.poses.shape == (4, base.core.M_d, 3)
+
+
+def test_render_path_draws_route_slots_and_follows_the_swarm(fn_env_module):
+    cfg = compose("train", SMALL + ["task.waypoint_planner=dp"])
+    env = fn_env_module.FormationNav(cfg, headless=False)  # rendering on -> _debug_vis runs every step
+    td = env.reset()
+    td.set(("agents", "action"), torch.zeros(4, 4, 4))
+    out = env.step(td)
+    assert out["next", "info", "route"].shape == (4, env.core.Kp, 3)

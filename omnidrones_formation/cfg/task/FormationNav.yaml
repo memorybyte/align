@@ -37,6 +37,12 @@ waypoint_reach_dist: 0.6
 carrot_speed: 1.0
 carrot_lead: 1.5
 target_obs_clip: 3.0
+waypoint_planner: straight         # straight (paper) | dp (route planned around the static pillars)
+planner_ds: 0.5
+planner_lateral: 6.0
+planner_bins: 25
+planner_margin: 0.4
+planner_max_slope: 1.0
 
 # ---------------- phases ----------------
 form_tolerance: 0.35

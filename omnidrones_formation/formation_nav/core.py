@@ -93,6 +93,15 @@ class FormationNavConfig:
     carrot_speed: float = 1.0
     carrot_lead: float = 1.5
     target_obs_clip: float = 3.0  # clip the slot vector in the observation (keeps it in-distribution)
+    # route of the formation reference: "straight" line to the goal (paper), or "dp": a path
+    # planned around the (known) static pillars by dynamic programming over lateral offsets,
+    # inflated by the formation half-width. Moving obstacles are always left to the policy.
+    waypoint_planner: str = "straight"
+    planner_ds: float = 0.5  # spacing of the planning stations along the route (m)
+    planner_lateral: float = 6.0  # max lateral deviation from the straight line (m)
+    planner_bins: int = 25  # lateral candidates per station (odd, so 0 is one of them)
+    planner_margin: float = 0.4  # extra clearance around the inflated pillars (m)
+    planner_max_slope: float = 1.0  # max lateral change per metre along the route
 
     # phases
     form_tolerance: float = 0.35
@@ -419,7 +428,11 @@ class FormationNavCore:
         # episode layout
         self.heading = torch.zeros(E, **f32)
         self.direction = torch.zeros(E, 3, **f32)
-        self.path_len = torch.ones(E, **f32)
+        self.path_len = torch.ones(E, **f32)  # arc length of the reference route
+        self.straight_len = torch.ones(E, **f32)  # start-goal distance
+        self.Kp = int(math.ceil(cfg.goal_distance[1] / cfg.planner_ds)) + 1  # route polyline points
+        self.path_pts = torch.zeros(E, self.Kp, 3, **f32)
+        self.path_cum = torch.zeros(E, self.Kp, **f32)
         self.assembly = torch.zeros(E, 3, **f32)
         self.goal = torch.zeros(E, 3, **f32)
         self.formation_id = torch.zeros(E, dtype=torch.long, device=self.device)
@@ -587,7 +600,7 @@ class FormationNavCore:
 
         self.heading[env_ids] = heading
         self.direction[env_ids] = direction
-        self.path_len[env_ids] = path_len
+        self.straight_len[env_ids] = path_len
         self.assembly[env_ids] = assembly
         self.goal[env_ids] = goal
         self.formation_id[env_ids] = fid
@@ -603,6 +616,7 @@ class FormationNavCore:
 
         self._reset_obstacles(env_ids, direction, path_len, assembly, template)
         self._update_obstacle_kinematics(env_ids)
+        self._plan_route(env_ids, assembly, direction, path_len, template)
 
         slot = self.reference(env_ids).unsqueeze(1) + offset
         self.prev_dist[env_ids] = (slot - start).norm(dim=-1)
@@ -743,8 +757,74 @@ class FormationNavCore:
         self._update_obstacle_kinematics()
 
     def reference(self, env_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Formation reference point at arc length s_ref along the route polyline."""
         sl = slice(None) if env_ids is None else env_ids
-        return self.assembly[sl] + self.direction[sl] * self.s_ref[sl].unsqueeze(-1)
+        cum, pts, s = self.path_cum[sl], self.path_pts[sl], self.s_ref[sl].unsqueeze(-1)
+        idx = torch.searchsorted(cum.contiguous(), s.contiguous()).clamp(1, self.Kp - 1)
+        c0, c1 = cum.gather(1, idx - 1), cum.gather(1, idx)
+        t = ((s - c0) / (c1 - c0).clamp_min(1e-9)).clamp(0.0, 1.0)
+        g = lambda i: pts.gather(1, i.unsqueeze(-1).expand(-1, -1, 3)).squeeze(1)  # noqa: E731
+        p0, p1 = g(idx - 1), g(idx)
+        return p0 + (p1 - p0) * t
+
+    def _plan_route(self, env_ids, assembly, direction, length, template):
+        """
+        Route of the formation reference from the assembly point to the goal.
+
+        straight: the straight line (paper). dp: one lateral offset per station every
+        `planner_ds` metres, chosen by dynamic programming to keep the formation (pillar radius
+        + formation half-width + drone radius + margin) clear of the active pillars, with a
+        penalty on lateral deviation and on lateral changes, and a bounded slope.
+        """
+        cfg, B, Kp, dev = self.cfg, env_ids.numel(), self.Kp, self.device
+        s = torch.arange(Kp, device=dev, dtype=torch.float32) * cfg.planner_ds
+        s = torch.minimum(s.unsqueeze(0), length.unsqueeze(-1))  # (B, Kp), stations past the goal collapse on it
+        lateral = torch.stack([-direction[:, 1], direction[:, 0], torch.zeros_like(length)], -1)
+        offset = torch.zeros(B, Kp, device=dev)
+
+        pillars = self.obs_active[env_ids, : self.M_s]
+        if cfg.waypoint_planner == "dp" and self.M_s > 0 and pillars.any():
+            J = cfg.planner_bins
+            y = torch.linspace(-cfg.planner_lateral, cfg.planner_lateral, J, device=dev)
+            centre = J // 2
+            base = assembly[:, None, :2] + direction[:, None, :2] * s.unsqueeze(-1)  # (B, Kp, 2)
+            pts = base.unsqueeze(2) + lateral[:, None, None, :2] * y.view(1, 1, J, 1)  # (B, Kp, J, 2)
+            pxy = self.obs_anchor[env_ids, : self.M_s, :2]
+            half_width = template[..., :2].norm(dim=-1).max(dim=1).values  # (B,)
+            inflated = self.obs_radius[env_ids, : self.M_s] + (half_width + cfg.drone_radius + cfg.planner_margin).unsqueeze(-1)
+            d = (pts.unsqueeze(3) - pxy[:, None, None]).norm(dim=-1)  # (B, Kp, J, M_s)
+            intrusion = ((inflated[:, None, None] - d).clamp_min(0.0) * pillars[:, None, None].float()).square().sum(-1)
+            node = 100.0 * intrusion + 0.02 * y.square().view(1, 1, J)
+            # fixed start (assembly point) and end (goal and the collapsed stations after it)
+            pinned = torch.zeros(B, Kp, dtype=torch.bool, device=dev)
+            pinned[:, 0] = True
+            pinned |= s >= length.unsqueeze(-1) - 1e-6
+            not_centre = torch.ones(J, dtype=torch.bool, device=dev)
+            not_centre[centre] = False
+            node = node.masked_fill(pinned.unsqueeze(-1) & not_centre.view(1, 1, J), float("inf"))
+            dy = y.view(J, 1) - y.view(1, J)  # [from, to]
+            trans = 0.5 * dy.square()
+            trans = trans.masked_fill(dy.abs() > cfg.planner_max_slope * cfg.planner_ds + 1e-6, float("inf"))
+
+            value = node[:, 0]
+            back = []
+            for k in range(1, Kp):
+                total, arg = (value.unsqueeze(-1) + trans.unsqueeze(0)).min(dim=1)
+                value = total + node[:, k]
+                back.append(arg)
+            j = torch.full((B,), centre, dtype=torch.long, device=dev)
+            choice = [j]
+            for arg in reversed(back):
+                j = arg.gather(1, j.unsqueeze(-1)).squeeze(-1)
+                choice.append(j)
+            offset = y[torch.stack(choice[::-1], dim=1)]  # (B, Kp)
+
+        pts = assembly.unsqueeze(1) + direction.unsqueeze(1) * s.unsqueeze(-1) + lateral.unsqueeze(1) * offset.unsqueeze(-1)
+        seg = (pts[:, 1:] - pts[:, :-1]).norm(dim=-1)
+        cum = torch.cat([torch.zeros(B, 1, device=dev), seg.cumsum(dim=1)], dim=1)
+        self.path_pts[env_ids] = pts
+        self.path_cum[env_ids] = cum
+        self.path_len[env_ids] = cum[:, -1]
 
     def slots(self) -> torch.Tensor:
         return self.reference().unsqueeze(1) + self.slot_offset
@@ -853,7 +933,7 @@ class FormationNavCore:
         along = (rel * self.direction.unsqueeze(1)).sum(-1)
         lateral = (rel - self.direction.unsqueeze(1) * along.unsqueeze(-1))[..., :2].norm(dim=-1)
         oob = (lateral > cfg.out_of_bounds) | (pos[..., 2] > cfg.max_altitude) | (along < -cfg.out_of_bounds) | (
-            along > self.path_len.unsqueeze(-1) + cfg.out_of_bounds
+            along > self.straight_len.unsqueeze(-1) + cfg.out_of_bounds
         )
         crash = low | flipped | oob | nan
         if cfg.terminate_on_collision:
@@ -880,7 +960,7 @@ class FormationNavCore:
         acc["slot_sum"] += dist.mean(-1)
         st["slot_error"] = (acc["slot_sum"] / self.steps.float().clamp_min(1.0)).unsqueeze(-1)
         centroid = pos.mean(1)
-        prog = ((centroid - self.assembly) * self.direction).sum(-1) / self.path_len
+        prog = ((centroid - self.assembly) * self.direction).sum(-1) / self.straight_len
         st["progress"] = (prog * (self.phase > PHASE_FORM)).clamp(0.0, 1.0).unsqueeze(-1)
         in_hold = (self.phase == PHASE_HOLD).float()
         acc["hold_cnt"] += in_hold

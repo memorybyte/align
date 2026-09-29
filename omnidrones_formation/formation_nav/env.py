@@ -161,6 +161,7 @@ class FormationNav(IsaacEnv):
                 "obstacle_radius": UnboundedContinuousTensorSpec((M,)),
                 "obstacle_active": UnboundedContinuousTensorSpec((M,)),
                 "phase": UnboundedContinuousTensorSpec((1,)),
+                "route": UnboundedContinuousTensorSpec((self.core.Kp, 3)),
             }),
         }).expand(self.num_envs).to(self.device)
         self.observation_spec = observation_spec
@@ -268,6 +269,7 @@ class FormationNav(IsaacEnv):
             "obstacle_radius": self.core.obs_radius.clone(),
             "obstacle_active": self.core.obs_active.float(),
             "phase": self.core.phase.float().unsqueeze(-1),
+            "route": self.core.path_pts.clone(),
         }
         return TensorDict(
             {
@@ -300,10 +302,9 @@ class FormationNav(IsaacEnv):
         origin = self.envs_positions[i].cpu()
         core = self.core
         self.debug_draw.clear()
-        # planned straight path with its waypoints
-        a, g = core.assembly[i].cpu(), core.goal[i].cpu()
-        steps = max(2, int(core.path_len[i].item() / self.fn_cfg.waypoint_spacing) + 1)
-        path = torch.stack([a + (g - a) * s for s in torch.linspace(0, 1, steps)]) + origin
+        # route of the formation reference (straight line or planned around the pillars)
+        g = core.goal[i].cpu()
+        path = core.path_pts[i].cpu() + origin
         self.debug_draw.plot(path, size=2.0, color=(0.2, 0.8, 0.2, 1.0))
         # current formation slots
         slots = core.slots()[i].cpu() + origin
