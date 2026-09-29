@@ -63,6 +63,7 @@ STAT_KEYS = (
     "crash_obstacle_collision",
     "scenario",
     "formation_id",
+    "difficulty",
 )
 
 
@@ -120,6 +121,16 @@ class FormationNavConfig:
     corridor_half_width: float = 2.5
     obstacle_clearance: float = 2.5  # no obstacles within this distance of start / goal
     randomize_obstacle_radius: bool = False  # Isaac Sim uses fixed prim radii per slot
+    # obstacle curriculum: difficulty d in [0, 1] scales the number of active obstacles
+    # (1 .. max) and the speed of the moving ones. d goes up / down by `curriculum_step`
+    # when the success rate of the last `curriculum_window` finished obstacle episodes is
+    # above `curriculum_up` / below `curriculum_down`. Evaluation always uses d = 1.
+    obstacle_curriculum: bool = False
+    curriculum_start: float = 0.0
+    curriculum_step: float = 0.1
+    curriculum_window: int = 64
+    curriculum_up: float = 0.5
+    curriculum_down: float = 0.2
 
     # safety / termination
     drone_radius: float = 0.25
@@ -399,6 +410,10 @@ class FormationNavCore:
         self.is_static[: self.M_s] = True
         self.fixed_scenario: Optional[int] = None
         self.set_scenario(cfg.scenario)
+        self.difficulty = float(cfg.curriculum_start) if cfg.obstacle_curriculum else 1.0
+        self.frozen_difficulty: Optional[float] = None
+        self._cur_success = 0.0
+        self._cur_count = 0
 
         f32 = dict(dtype=torch.float32, device=self.device)
         # episode layout
@@ -478,6 +493,31 @@ class FormationNavCore:
         else:
             raise ValueError(f"Unknown scenario '{scenario}'")
 
+    def freeze_difficulty(self, level: Optional[float]):
+        """Use a fixed obstacle difficulty (e.g. 1.0 for evaluation); None resumes the curriculum."""
+        self.frozen_difficulty = level
+
+    @property
+    def current_difficulty(self) -> float:
+        return self.difficulty if self.frozen_difficulty is None else self.frozen_difficulty
+
+    def _update_curriculum(self, env_ids: torch.Tensor):
+        cfg = self.cfg
+        if not cfg.obstacle_curriculum or self.frozen_difficulty is not None:
+            return
+        finished = (self.steps[env_ids] > 0) & (self.scenario_id[env_ids] > 0)
+        if not finished.any():
+            return
+        self._cur_success += self.stats["success"][env_ids][finished].sum().item()
+        self._cur_count += int(finished.sum().item())
+        if self._cur_count >= cfg.curriculum_window:
+            rate = self._cur_success / self._cur_count
+            if rate > cfg.curriculum_up:
+                self.difficulty = min(1.0, self.difficulty + cfg.curriculum_step)
+            elif rate < cfg.curriculum_down:
+                self.difficulty = max(0.0, self.difficulty - cfg.curriculum_step)
+            self._cur_success, self._cur_count = 0.0, 0
+
     def set_formation(self, name: Optional[str]):
         """Force one formation from the pool (None: sample from the pool)."""
         self.fixed_formation = None if name is None else self.formation_names.index(name)
@@ -507,6 +547,7 @@ class FormationNavCore:
         B = env_ids.numel()
         if B == 0:
             return torch.zeros(0, n, 3, device=self.device)
+        self._update_curriculum(env_ids)
 
         heading = self._uniform(0.0, 2 * math.pi, B) if cfg.random_heading else torch.zeros(B, device=self.device)
         direction = torch.stack([torch.cos(heading), torch.sin(heading), torch.zeros_like(heading)], -1)
@@ -576,6 +617,7 @@ class FormationNavCore:
         self.stats["time_to_goal"][env_ids] = -1.0
         self.stats["scenario"][env_ids] = self.scenario_id[env_ids].float().unsqueeze(-1)
         self.stats["formation_id"][env_ids] = fid.float().unsqueeze(-1)
+        self.stats["difficulty"][env_ids] = self.current_difficulty
         self.last_min_clearance[env_ids] = float("inf")
         self.last_min_separation[env_ids] = float("inf")
         return start
@@ -605,7 +647,7 @@ class FormationNavCore:
         phase = torch.zeros(B, self.M, device=dev)
 
         if self.M_s > 0:
-            k = self._randint(cfg.num_static[0], cfg.num_static[1], B)
+            k = self._randint(*self._count_range(cfg.num_static), B)
             slot_idx = torch.arange(self.M_s, device=dev)
             active[:, : self.M_s] = has_static.unsqueeze(-1) & (slot_idx < k.unsqueeze(-1))
             # stratified along the path so pillars do not pile up
@@ -617,7 +659,7 @@ class FormationNavCore:
             anchor[:, : self.M_s] = pos
 
         if self.M_d > 0:
-            k = self._randint(cfg.num_dynamic[0], cfg.num_dynamic[1], B)
+            k = self._randint(*self._count_range(cfg.num_dynamic), B)
             slot_idx = torch.arange(self.M_d, device=dev)
             active[:, self.M_s :] = has_dynamic.unsqueeze(-1) & (slot_idx < k.unsqueeze(-1))
             s = s_lo.unsqueeze(-1) + self._rand(B, self.M_d) * (s_hi - s_lo).unsqueeze(-1)
@@ -637,7 +679,8 @@ class FormationNavCore:
             anchor[:, self.M_s :] = centre
             axis[:, self.M_s :] = ax
             half[:, self.M_s :] = h
-            speed[:, self.M_s :] = self._uniform(*cfg.dynamic_speed, B, self.M_d)
+            lo, hi = cfg.dynamic_speed
+            speed[:, self.M_s :] = self._uniform(lo, lo + (hi - lo) * self.current_difficulty, B, self.M_d)
             phase[:, self.M_s :] = self._rand(B, self.M_d) * 4.0 * h
 
         radius = self.slot_radii.expand(B, self.M).clone()
@@ -653,6 +696,15 @@ class FormationNavCore:
         self.obs_speed[env_ids] = speed
         self.obs_phase[env_ids] = phase
         self.obs_radius[env_ids] = radius
+
+    def _count_range(self, bounds) -> Tuple[int, int]:
+        """(min, max) number of active obstacles of one kind at the current difficulty."""
+        lo, hi = int(bounds[0]), int(bounds[1])
+        d = self.current_difficulty
+        if d >= 1.0:
+            return lo, hi
+        top = min(hi, 1 + int(round(d * (hi - 1))))
+        return min(lo, top), top
 
     def _update_obstacle_kinematics(self, env_ids: Optional[torch.Tensor] = None):
         """Triangle-wave motion of the dynamic spheres along their segment (closed form)."""

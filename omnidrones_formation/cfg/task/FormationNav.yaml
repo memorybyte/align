@@ -65,6 +65,13 @@ dynamic_half_path: [2.0, 4.0]
 corridor_half_width: 2.5
 obstacle_clearance: 2.5            # keep goal_distance[0] >= 2 * obstacle_clearance + 1
 obstacle_physics_collision: false  # collisions are detected analytically; true makes prims solid
+randomize_obstacle_radius: false   # Isaac prims have fixed radii per slot
+obstacle_curriculum: false         # start with 1 pillar / slow spheres, add more as success rises
+curriculum_start: 0.0
+curriculum_step: 0.1
+curriculum_window: 64
+curriculum_up: 0.5
+curriculum_down: 0.2
 
 # ---------------- safety / termination ----------------
 drone_radius: 0.25

@@ -83,6 +83,9 @@ def evaluate_scenarios(
     of env 0 per scenario to `plot_dir`.
     """
     results = {}
+    core = getattr(base_env, "core", None)
+    if core is not None:
+        core.freeze_difficulty(1.0)  # evaluate at full obstacle difficulty
     for scenario in scenarios:
         callback = callback_factory(scenario) if callback_factory is not None else None
         traj = rollout_scenario(env, base_env, policy, scenario, max_steps, formation, callback)
@@ -98,8 +101,10 @@ def evaluate_scenarios(
         results[scenario] = res
         if plot_dir is not None:
             plot_episode(traj, 0, f"{plot_dir}/trajectory_{scenario}.png", title=f"scenario: {scenario}")
-    base_env.set_scenario("train_mix")
+    base_env.set_scenario(getattr(getattr(core, "cfg", None), "scenario", "train_mix"))
     base_env.set_formation(None)
+    if core is not None:
+        core.freeze_difficulty(None)
     return results
 
 

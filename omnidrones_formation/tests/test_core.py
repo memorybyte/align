@@ -322,3 +322,27 @@ def test_formation_relaxation_near_obstacles():
     assert rewards[0.0] < 0  # progress penalty without relaxation
     assert rewards[1.0] > rewards[0.0]  # clearance 0.4 m of 1.0 m: penalty scaled to 40 %
     assert rewards[1.0] == pytest.approx(0.4 * rewards[0.0], rel=1e-3)
+
+
+def test_obstacle_curriculum_scales_obstacle_count_and_adapts():
+    core, _ = make_core(num_envs=64, scenario="static", obstacle_curriculum=True, curriculum_window=8,
+                        curriculum_step=0.5)
+    assert core.difficulty == 0.0
+    assert core.obs_active[:, : core.M_s].sum(1).max() == 1  # one pillar at difficulty 0
+    # pretend every episode succeeded: difficulty rises on the next resets
+    core.steps[:] = 10
+    core.stats["success"][:] = 1.0
+    core.reset(torch.arange(64))
+    assert core.difficulty == 0.5
+    core.steps[:] = 10
+    core.stats["success"][:] = 1.0
+    core.reset(torch.arange(64))
+    assert core.difficulty == 1.0
+    k = core.obs_active[:, : core.M_s].sum(1)
+    assert k.min() >= core.cfg.num_static[0] and k.max() <= core.cfg.num_static[1]
+    # evaluation freezes full difficulty regardless of the curriculum
+    core.difficulty = 0.0
+    core.freeze_difficulty(1.0)
+    core.reset(torch.arange(64))
+    assert core.obs_active[:, : core.M_s].sum(1).min() >= core.cfg.num_static[0]
+    assert core.difficulty == 0.0
