@@ -27,6 +27,21 @@ This repository contains:
 3. **Cube / sphere / pyramid targets were flattened onto the ground** (bottom layer clamped to
    z = 0.05 m). Evaluation and rendering could not run.
 
+## OmniDrones task: what the CPU experiments showed
+
+Measured with the point-mass version of the same task
+([details](omnidrones_formation/docs/POINTMASS_RESULTS.md)); the Isaac Sim version has not
+been run yet because there was no GPU here.
+
+* **Without obstacles:** 88–97 % of episodes take off, build the 3-D formation, fly 8–12 m and
+  hold at the goal.
+* **Static pillars with the paper's straight-line waypoints:** 0–3 % success. The straight
+  route cuts through a pillar for the formation in 93–98 % of layouts.
+* **With a route planned around the pillars** (`waypoint_planner: dp`, now the default):
+  50 % static and 28 % mixed success after only about 2 M steps.
+* **Moving obstacles:** avoided by the learned policy alone (about 38 % success so far); they
+  need Isaac-scale training.
+
 ## Quick start
 
 ```bash

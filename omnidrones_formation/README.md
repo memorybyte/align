@@ -12,7 +12,7 @@ centralised critic).
 | Scenario | Obstacles |
 |---|---|
 | `none` | empty route: the baseline behaviour |
-| `static` | 3–6 vertical pillars (r = 0.3–0.6 m) in a 5 m corridor along the route |
+| `static` | 2–4 vertical pillars (r = 0.3–0.6 m) in a 5 m corridor along the route |
 | `dynamic` | 1–3 spheres crossing the route back and forth (0.3–1.0 m/s) |
 | `mixed` | both |
 | `train_mix` | a random scenario per episode (default for training) |
@@ -27,6 +27,7 @@ centralised critic).
 | Procrustes formation error (§IV-D) | batched Kabsch in `core.procrustes_error`, normalised by the max squared slot distance |
 | Adaptive radius-based neighbours, max k, zero padding (§IV-C) | `neighbour_radius`, `max_neighbours`, plus a validity flag per slot (removes the padding/collision ambiguity of the old code) |
 | Receding-horizon waypoints (§IV-E) | `waypoint_mode: discrete`, 1 m spacing; next waypoint when the swarm centroid is within 0.6 m. `carrot` = continuously moving reference |
+| (new) Route around static obstacles | `waypoint_planner: dp` (default): the waypoints follow a route planned around the known pillars by a vectorised dynamic program, inflated by the formation's half-width. `straight` = the paper's straight line. Moving obstacles are always handled by the policy. See the results below for why this matters |
 | FC-LSTM-FC actor + centralised critic, CTDE (§IV-B) | `formation_nav/mappo_lstm.py`, with proper BPTT (see below) |
 | Rewards: nav, formation, avoidance, tilt, smoothness, reaching (§IV-A) | the same terms, plus obstacle clearance, a hold bonus and a crash penalty |
 | 4-D action [direction, speed] → velocity → low-level controller (§III-D) | `action_mode: dir_speed` → Lee position controller (velocity tracking) at 62.5 Hz |
@@ -64,7 +65,7 @@ scripts/
   evaluate.py        Isaac Sim evaluation: none/static/dynamic/mixed → json/md tables, plots, mp4
   train_lite.py      point-mass training on CPU/GPU
   eval_lite.py       point-mass evaluation
-tests/               62 unit / integration tests (run without Isaac Sim)
+tests/               70 unit / integration tests (run without Isaac Sim)
 ```
 
 ## Install
@@ -93,6 +94,8 @@ python scripts/train.py task.formation=custom task.num_drones=4 \
     'task.custom_formation=[[0,0,0],[-1.2,1.2,0],[-1.2,-1.2,0],[-2.4,0,0.8]]'
 # the paper's continuous waypoint alternative, or the MLP baseline
 python scripts/train.py task.waypoint_mode=carrot
+python scripts/train.py task.waypoint_planner=straight    # the paper's straight route
+python scripts/train.py task.obstacle_curriculum=true     # start with 1 obstacle, add more as success rises
 python scripts/train.py algo=mappo
 # warm start from a point-mass pre-trained actor (same observation/action spaces)
 python scripts/train.py checkpoint_path=runs/lite/checkpoint.pt
@@ -127,7 +130,7 @@ debug the reward, check learnability, or pre-train.
 ```bash
 python scripts/train_lite.py --num_envs 128 --num_drones 8 --iters 400 --out runs/lite
 python scripts/eval_lite.py --checkpoint runs/lite/checkpoint.pt --num_drones 8
-pytest tests -q            # 62 tests, about 1 min on CPU
+pytest tests -q            # 70 tests, about 10 s on CPU
 ```
 
 ## Correctness notes
@@ -140,6 +143,10 @@ pytest tests -q            # 62 tests, about 1 min on CPU
   failure.
 * **Shared weights:** TorchRL's collector deep-copies the policy but shares parameter storage.
   A test checks that the collector acts with the updated weights after `train_op`.
+* **Input normalisation:** per-feature running mean/std, updated after each PPO update
+  (`algo.input_norm: running`). LayerNorm across the raw observation, as in the old code, makes
+  a distant obstacle rescale a drone's own velocity features. It is still available as
+  `layernorm`. The learning rate decays linearly over the run.
 
 ## What has and has not been verified
 
@@ -149,7 +156,12 @@ Verified in a CPU-only container, without Isaac Sim:
   geometry and motion, phase machine, termination, observation invariances) and the algorithm;
 * a wiring test that runs `env.py` against fakes of the Isaac/OmniDrones classes, including
   the Hydra configs and a short train + evaluate;
-* learning on the point-mass surrogate (see the repository README).
+* learning on the point-mass surrogate: [docs/POINTMASS_RESULTS.md](docs/POINTMASS_RESULTS.md).
+  * Without obstacles, 88–97 % of episodes take off, form, navigate and hold.
+  * With straight waypoints, static pillars stay unsolved (0–3 %): the route runs through
+    them in 93–98 % of layouts.
+  * The planned route raises static success to 50 %.
+  * Moving obstacles and hold precision need more training than a CPU run allows.
 
 **Not yet run in Isaac Sim itself** (no GPU in the development container). Things to check on
 the first run:

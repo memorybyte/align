@@ -96,7 +96,7 @@ class FormationNavConfig:
     # route of the formation reference: "straight" line to the goal (paper), or "dp": a path
     # planned around the (known) static pillars by dynamic programming over lateral offsets,
     # inflated by the formation half-width. Moving obstacles are always left to the policy.
-    waypoint_planner: str = "straight"
+    waypoint_planner: str = "dp"
     planner_ds: float = 0.5  # spacing of the planning stations along the route (m)
     planner_lateral: float = 6.0  # max lateral deviation from the straight line (m)
     planner_bins: int = 25  # lateral candidates per station (odd, so 0 is one of them)
@@ -120,7 +120,7 @@ class FormationNavConfig:
     # obstacles
     scenario: str = "train_mix"  # none | static | dynamic | mixed | train_mix
     scenario_probs: Tuple[float, float, float, float] = (0.2, 0.3, 0.2, 0.3)  # for train_mix
-    num_static: Tuple[int, int] = (3, 6)  # (min, max) active pillars; max = number of pillar slots
+    num_static: Tuple[int, int] = (2, 4)  # (min, max) active pillars; max = number of pillar slots
     num_dynamic: Tuple[int, int] = (1, 3)
     static_radius: Tuple[float, float] = (0.3, 0.6)
     static_height: float = 6.0
@@ -650,8 +650,13 @@ class FormationNavCore:
         has_static = (scenario == 1) | (scenario == 3)
         has_dynamic = (scenario == 2) | (scenario == 3)
         lateral = torch.stack([-direction[:, 1], direction[:, 0], torch.zeros_like(path_len)], -1)
-        s_lo = torch.full_like(path_len, cfg.obstacle_clearance)
-        s_hi = (path_len - cfg.obstacle_clearance).clamp_min(cfg.obstacle_clearance + 1e-3)
+        # keep the take-off / assembly area and the hold position at the goal free: at least
+        # `obstacle_clearance`, and enough for this formation's half-width + the largest obstacle
+        half_width = template[..., :2].norm(dim=-1).max(dim=1).values
+        biggest = max(cfg.static_radius[1], cfg.dynamic_radius[1])
+        clearance = torch.clamp_min(half_width + biggest + cfg.drone_radius + 0.5, cfg.obstacle_clearance)
+        s_lo = clearance
+        s_hi = (path_len - clearance).clamp_min(clearance + 1e-3)
 
         active = torch.zeros(B, self.M, dtype=torch.bool, device=dev)
         anchor = torch.zeros(B, self.M, 3, device=dev)

@@ -37,7 +37,7 @@ waypoint_reach_dist: 0.6
 carrot_speed: 1.0
 carrot_lead: 1.5
 target_obs_clip: 3.0
-waypoint_planner: straight         # straight (paper) | dp (route planned around the static pillars)
+waypoint_planner: dp               # dp (route planned around the static pillars) | straight (paper)
 planner_ds: 0.5
 planner_lateral: 6.0
 planner_bins: 25
@@ -61,7 +61,7 @@ max_obstacles_obs: 4
 # ---------------- obstacles ----------------
 scenario: train_mix                # none | static | dynamic | mixed | train_mix
 scenario_probs: [0.2, 0.3, 0.2, 0.3]   # none, static, dynamic, mixed (train_mix only)
-num_static: [3, 6]                 # [min, max] active pillars (max = number of pillar prims)
+num_static: [2, 4]                 # [min, max] active pillars (max = number of pillar prims)
 num_dynamic: [1, 3]
 static_radius: [0.3, 0.6]
 static_height: 6.0
@@ -69,7 +69,7 @@ dynamic_radius: [0.25, 0.4]
 dynamic_speed: [0.3, 1.0]
 dynamic_half_path: [2.0, 4.0]
 corridor_half_width: 2.5
-obstacle_clearance: 2.5            # keep goal_distance[0] >= 2 * obstacle_clearance + 1
+obstacle_clearance: 2.5            # min free distance around start / goal (grows with the formation size)
 obstacle_physics_collision: false  # collisions are detected analytically; true makes prims solid
 randomize_obstacle_radius: false   # Isaac prims have fixed radii per slot
 obstacle_curriculum: false         # start with 1 pillar / slow spheres, add more as success rises

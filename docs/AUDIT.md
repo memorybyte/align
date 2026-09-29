@@ -128,3 +128,12 @@ these two bugs.
 * Add an evaluation script that produces Tables I–III (fixed seeds, N runs, mean ± std).
 * Remove absolute position from the observation, or justify it; it conflicts with the
   long-distance / waypoint claim.
+* If obstacles are added, do not keep purely straight-line waypoints for static obstacles. In
+  the point-mass experiments (`omnidrones_formation/docs/POINTMASS_RESULTS.md`):
+  * the straight route crosses a pillar for the rigid formation in 93–98 % of layouts, and
+    static success stayed at 0–3 %;
+  * planning the waypoint route around known static obstacles raised it to 50 %;
+  * the learned policy still handles moving obstacles and local deformation.
+* Use per-feature input normalisation instead of LayerNorm across the raw observation (Table V
+  `obs_norm`). Across-feature normalisation couples unrelated inputs, e.g. a distant neighbour
+  or obstacle rescales the drone's own velocity.

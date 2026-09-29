@@ -350,7 +350,7 @@ def test_obstacle_curriculum_scales_obstacle_count_and_adapts():
 
 
 def test_straight_route_is_the_line_to_the_goal():
-    core, _ = make_core(num_envs=4, scenario="static")
+    core, _ = make_core(num_envs=4, scenario="static", waypoint_planner="straight")
     for s in (0.0, 1.3, 5.0):
         core.s_ref[:] = s
         expected = core.assembly + core.direction * torch.minimum(torch.tensor(s), core.path_len).unsqueeze(-1)
@@ -387,7 +387,7 @@ def test_dp_route_avoids_inflated_pillars_and_keeps_endpoints():
     off = ((core.path_pts[..., :2] - core.assembly[:, None, :2]) * lat[:, None]).sum(-1)
     assert off.diff(dim=1).abs().max() <= core.cfg.planner_max_slope * core.cfg.planner_ds + 1e-4
     # the straight line would have hit pillars in many of these episodes
-    straight, _ = _route_clearance(make_core(**kw)[0])
+    straight, _ = _route_clearance(make_core(waypoint_planner="straight", **kw)[0])
     assert (straight < half_width + core.cfg.drone_radius).float().mean() > 0.8
 
 
