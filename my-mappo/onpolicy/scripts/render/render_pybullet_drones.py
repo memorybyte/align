@@ -8,19 +8,16 @@ from pathlib import Path
 import torch
 
 from onpolicy.config import get_config
-from onpolicy.envs.pybullet_drone_env import PyBulletDroneWrapper
+from onpolicy.envs.pybullet_drone_env import make_pybullet_drone_env
 from onpolicy.envs.env_wrappers import ShareDummyVecEnv
+from onpolicy.scripts.train.train_pybullet_drones import EPISODE_LENGTH
 
 def make_render_env(all_args):
     def get_env_fn(rank):
         def init_env():
-            # Use GUI for visual rendering
-            env = PyBulletDroneWrapper(
-                num_drones=all_args.num_drones,
-                max_neighbors=all_args.max_neighbors,
-                gui=True,  # Enable GUI for visualization
-                record=False,
-            )
+            # Same env construction as training (obs size, formation pool, reward),
+            # with the GUI enabled for visual rendering.
+            env = make_pybullet_drone_env(all_args, gui=True)
             env.seed(all_args.seed + rank * 1000)
             return env
         return init_env
@@ -56,8 +53,9 @@ def main(args):
     all_args.algorithm_name = "rmappo"
     all_args.env_name = "pybullet-drones"
     all_args.recurrent_N = 2  # LSTM stores both h and c states
-    # Episode length must match env: 8s * 48Hz ctrl_freq = 384 steps
-    all_args.episode_length = 384
+    all_args.hidden_size = 256  # must match training (train_pybullet_drones.py)
+    # Episode length must match env: 8s * 30Hz ctrl_freq = 240 steps
+    all_args.episode_length = EPISODE_LENGTH
 
     # Validation
     assert all_args.use_render, ("You need to set use_render to True")

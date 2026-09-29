@@ -30,6 +30,47 @@ from onpolicy.algorithms.utils.util import init, check
 from onpolicy.utils.util import get_shape_from_obs_space
 
 
+def run_lstm(
+    lstm: nn.LSTM,
+    features: torch.Tensor,
+    rnn_states: torch.Tensor,
+    masks: torch.Tensor,
+    num_layers: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Run an LSTM over either a single step or a batch of sequence chunks.
+
+    Buffer layout for the hidden state is (N, 2 * num_layers, H): h first, then c.
+
+    - Rollout (single step): features (N, F), rnn_states (N, 2L, H), masks (N, 1).
+    - Training (recurrent_generator): features (T * N, F) flattened time-major as
+      produced by `_flatten(T, N, x)`, rnn_states (N, 2L, H) holding the state at the
+      start of each chunk, masks (T * N, 1). The LSTM is unrolled over T and the
+      state is reset wherever masks == 0 (start of a new episode inside the chunk).
+
+    Returns:
+        outputs: (T * N, H) (or (N, H) for a single step)
+        rnn_states_out: (N, 2L, H) state after the last processed step
+    """
+    n = rnn_states.shape[0]
+    t_len = features.shape[0] // n
+    h = rnn_states[:, :num_layers, :].transpose(0, 1).contiguous()  # (L, N, H)
+    c = rnn_states[:, num_layers:, :].transpose(0, 1).contiguous()
+    x = features.reshape(t_len, n, -1)
+    m = masks.reshape(t_len, n, 1)
+
+    outputs = []
+    for t in range(t_len):
+        mask_t = m[t].unsqueeze(0)  # (1, N, 1)
+        h = h * mask_t
+        c = c * mask_t
+        out, (h, c) = lstm(x[t].unsqueeze(1), (h, c))
+        outputs.append(out.squeeze(1))
+    outputs = torch.stack(outputs, dim=0).reshape(t_len * n, -1)
+    rnn_states_out = torch.cat([h, c], dim=0).transpose(0, 1)  # (N, 2L, H)
+    return outputs, rnn_states_out
+
+
 def init_weights(module, gain=np.sqrt(2), bias=0.0):
     """Initialize weights with orthogonal initialization."""
     if isinstance(module, (nn.Linear, nn.Conv2d)):
@@ -174,61 +215,28 @@ class LSTMActor(nn.Module):
             action_std: Std of action distribution (batch, action_dim)
             rnn_states_out: Updated LSTM hidden states
         """
-        batch_size = obs.shape[0]
-        
-        # Debug input shapes (first time only)
-        if not hasattr(self, '_debug_printed'):
-            print(f"[DEBUG] forward input shapes:")
-            print(f"  obs: {obs.shape}")
-            print(f"  rnn_states: {rnn_states.shape}")
-            print(f"  masks: {masks.shape}")
-            print(f"  Expected: rnn_states=(batch, num_layers, hidden)")
-            print(f"  Will split into h and c")
-            self._debug_printed = True
-        
         # Feature extraction: obs_norm -> fc1 (Dense->Tanh->LayerNorm)
         obs_normed = self.obs_norm(obs)
         features = self.fc1(obs_normed)  # (batch, hidden_size)
-        
-        # Prepare LSTM input (batch, seq_len=1, hidden_size)
-        lstm_input = features.unsqueeze(1)
-        
-        # Handle RNN states: buffer stores (batch, recurrent_N=2, hidden_size)
-        # recurrent_N=2: index 0 = h (hidden state), index 1 = c (cell state)
-        n_layers = self.num_lstm_layers  # actual LSTM layers (1)
-        h_state = rnn_states[:, :n_layers, :]   # (batch, 1, hidden)
-        c_state = rnn_states[:, n_layers:, :]   # (batch, 1, hidden)
-        
-        # Transpose to LSTM format: (num_layers, batch, hidden)
-        h = h_state.transpose(0, 1)  # (1, batch, hidden)
-        c = c_state.transpose(0, 1)  # (1, batch, hidden)
-        
-        # Handle masks (reset hidden states where mask is 0)
-        # masks shape: (batch, 1) -> need (1, batch, 1) for broadcasting
-        mask_for_broadcast = masks.unsqueeze(0)  # (1, batch, 1)
-        h = h * mask_for_broadcast
-        c = c * mask_for_broadcast
-        
-        # LSTM forward
-        lstm_out, (h_new, c_new) = self.lstm(lstm_input, (h, c))
-        
+
+        # Buffer stores (N, recurrent_N=2, hidden): index 0 = h, index 1 = c.
+        # During training obs is (T * N, obs_dim) and the LSTM is unrolled over T.
+        lstm_out, rnn_states_out = run_lstm(
+            self.lstm, features, rnn_states, masks, self.num_lstm_layers
+        )
+
         # Output with LayerNorm after LSTM
-        lstm_out = lstm_out.squeeze(1)  # (batch, lstm_hidden_size)
         lstm_out = self.lstm_norm(lstm_out)
         action_mean = self.action_mean(lstm_out)  # (batch, action_dim)
-        
+
         # Apply tanh for bounded actions
         if self.use_tanh_output:
             action_mean = torch.tanh(action_mean) * self.action_scale
-        
+
         # Get std from learnable log_std
         log_std = torch.clamp(self.log_std, self.log_std_min, self.log_std_max)
         action_std = torch.exp(log_std).expand_as(action_mean)
-        
-        # Return hidden states in buffer format: (batch, recurrent_N=2, hidden)
-        # Concatenate h_new and c_new: h at index 0, c at index 1
-        rnn_states_out = torch.cat([h_new, c_new], dim=0).transpose(0, 1)  # (batch, 2, hidden)
-        
+
         return action_mean, action_std, rnn_states_out
     
     def sample(
@@ -419,32 +427,20 @@ class CentralizedCritic(nn.Module):
         features = self.fc1(share_obs_normed)  # (batch, hidden_size)
         
         if self.use_lstm and self.lstm is not None:
-            # Prepare LSTM input
-            lstm_input = features.unsqueeze(1)  # (batch, 1, hidden_size)
-            
-            if rnn_states is not None and masks is not None:
-                # Buffer format: (batch, recurrent_N=2, hidden)
-                # index 0 = h (hidden state), index 1 = c (cell state)
-                n_layers = self.num_lstm_layers  # actual LSTM layers (1)
-                h_state = rnn_states[:, :n_layers, :]   # (batch, 1, hidden)
-                c_state = rnn_states[:, n_layers:, :]   # (batch, 1, hidden)
-                h = h_state.transpose(0, 1)  # (1, batch, hidden)
-                c = c_state.transpose(0, 1)  # (1, batch, hidden)
-                mask_for_broadcast = masks.unsqueeze(0)  # (1, batch, 1)
-                h = h * mask_for_broadcast
-                c = c * mask_for_broadcast
-            else:
+            if rnn_states is None or masks is None:
                 batch_size = share_obs.shape[0]
-                h = torch.zeros(self.num_lstm_layers, batch_size, self.lstm_hidden_size).to(**self.tpdv)
-                c = torch.zeros(self.num_lstm_layers, batch_size, self.lstm_hidden_size).to(**self.tpdv)
-            
-            lstm_out, (h_new, c_new) = self.lstm(lstm_input, (h, c))
-            lstm_out = lstm_out.squeeze(1)
+                rnn_states = torch.zeros(
+                    batch_size, 2 * self.num_lstm_layers, self.lstm_hidden_size
+                ).to(**self.tpdv)
+                masks = torch.ones(batch_size, 1).to(**self.tpdv)
+
+            # Buffer format: (N, recurrent_N=2, hidden), h first then c.
+            lstm_out, rnn_states_out = run_lstm(
+                self.lstm, features, rnn_states, masks, self.num_lstm_layers
+            )
             # Apply LayerNorm after LSTM
             lstm_out = self.lstm_norm(lstm_out)
-            # Return in buffer format: (batch, recurrent_N=2, hidden)
-            rnn_states_out = torch.cat([h_new, c_new], dim=0).transpose(0, 1)
-            
+
             values = self.value_out(lstm_out)
         else:
             values = self.value_out(features)

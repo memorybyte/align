@@ -49,6 +49,8 @@ class PyBulletDroneWrapper:
         neighbour_radius: float = 0.0,
         min_dynamic_neighbours: int = 1,
         max_dynamic_neighbours: int = 8,
+        target_distance_range: Tuple[float, float] = (0.5, 2.0),
+        success_dist: float = 0.2,
     ):
         """
         Initialize the PyBullet drone wrapper.
@@ -82,6 +84,9 @@ class PyBulletDroneWrapper:
                                     even if outside radius)
             max_dynamic_neighbours: Maximum neighbor slots (defines obs_dim when dynamic
                                     neighbors is enabled). Remaining slots are zero-padded.
+            target_distance_range: (min, max) distance (m) from initial to target formation center
+            success_dist: Distance (m) to target counted as reached. Used for the reaching
+                          bonus, the success termination and the logged `reached_target`.
         """
         self.num_drones = num_drones
         self.max_neighbors = max(0, int(max_neighbors))
@@ -99,6 +104,7 @@ class PyBulletDroneWrapper:
         self.w_smooth = w_smooth
         self.tilt_soft_threshold = tilt_soft_threshold
         self.collision_C = collision_C
+        self.success_dist = float(success_dist)
         
         # Create the underlying environment with formation-based positioning
         # MultiHoverAviary handles formation template, random center, random yaw,
@@ -122,6 +128,7 @@ class PyBulletDroneWrapper:
             neighbour_radius=self.neighbour_radius,
             min_dynamic_neighbours=self.min_dynamic_neighbours,
             max_dynamic_neighbours=self.max_dynamic_neighbours,
+            target_distance_range=tuple(target_distance_range),
         )
         
         # Store for computing deltas
@@ -268,7 +275,7 @@ class PyBulletDroneWrapper:
             r_dist[i] = -dist[i]
         - Collision avoidance penalty (per-agent):
             r_avoid[i] = -1 if agent i is in collision, else 0
-        - Reaching bonus (per-agent): +1.0 if agent i within 50cm of its target
+        - Reaching bonus (per-agent): +1.0 if agent i within success_dist of its target
         - Velocity penalty (per-agent): Penalize high velocity when close to target
         - Tilt penalty (per-agent): Soft penalty when roll/pitch exceeds threshold
         
@@ -305,8 +312,8 @@ class PyBulletDroneWrapper:
         r_avoid = np.where(involved, -1.0, 0.0)
         
         # --- 5. Reaching bonus (per-agent) ---
-        # +1.0 if agent i is within 20cm of its target
-        r_reached = np.where(current_distances < 0.20, 1.0, 0.0)
+        # +1.0 if agent i is within success_dist of its target
+        r_reached = np.where(current_distances < self.success_dist, 1.0, 0.0)
         
         # --- 6. Velocity penalty when close to target (per-agent) ---
         # Smooth ramp: penalty grows linearly as drone gets closer to target.
@@ -464,7 +471,7 @@ class PyBulletDroneWrapper:
         
         # Fix 3: Check if all drones reached target with low velocity (early success termination)
         all_reached = True
-        success_distance_threshold = 0.2  # Within 20cm of target
+        success_distance_threshold = self.success_dist
         success_velocity_threshold = 0.1  # Velocity less than 0.1 m/s
         for i in range(self.num_drones):
             distance = np.linalg.norm(target_pos[i] - positions[i])
@@ -535,7 +542,7 @@ class PyBulletDroneWrapper:
                     'initial_distance': float(self._episode_initial_distances[i]),
                     'final_distance': float(reward_infos[i]['dist_to_target']),
                     'distance_improvement': float(self._episode_initial_distances[i] - reward_infos[i]['dist_to_target']),
-                    'reached_target': reward_infos[i]['dist_to_target'] < 0.50,
+                    'reached_target': reward_infos[i]['dist_to_target'] < self.success_dist,
                     'direction_traveled': (positions[i] - self._episode_initial_positions[i]).tolist(),
                     'direction_to_target': (self._episode_target_positions[i] - self._episode_initial_positions[i]).tolist(),
                     'episode_avg_r_form': float(self._episode_cumulative_r_form / step_count),
@@ -637,7 +644,34 @@ class PyBulletDroneWrapper:
         self._env.close()
 
 
-def make_pybullet_drone_env(all_args):
+def env_kwargs_from_args(all_args) -> Dict[str, Any]:
+    """
+    Build PyBulletDroneWrapper keyword arguments from the parsed CLI arguments.
+
+    Training, evaluation and rendering must construct identical environments
+    (same observation size, formation pool and reward), so they all go through here.
+    """
+    return dict(
+        num_drones=all_args.num_drones,
+        formation_spacing=all_args.formation_spacing,
+        formation_type=all_args.formation_type,
+        max_neighbors=all_args.max_neighbors,
+        neighbour_radius=all_args.neighbour_radius,
+        min_dynamic_neighbours=all_args.min_dynamic_neighbours,
+        max_dynamic_neighbours=all_args.max_dynamic_neighbours,
+        target_distance_range=(all_args.target_distance_min, all_args.target_distance_max),
+        w_form=all_args.w_form,
+        w_nav=all_args.w_nav,
+        w_avoid=all_args.w_avoid,
+        w_tilt=all_args.w_tilt,
+        w_smooth=all_args.w_smooth,
+        tilt_soft_threshold=all_args.tilt_soft_threshold,
+        collision_dist=all_args.collision_dist,
+        success_dist=all_args.success_dist,
+    )
+
+
+def make_pybullet_drone_env(all_args, gui: bool = False):
     """
     Factory function to create PyBulletDroneWrapper environment.
     
@@ -645,22 +679,9 @@ def make_pybullet_drone_env(all_args):
     
     Args:
         all_args: Namespace with environment arguments
+        gui: Whether to open the PyBullet GUI
         
     Returns:
         PyBulletDroneWrapper environment
     """
-    num_drones = getattr(all_args, 'num_drones', 3)
-    max_neighbors = getattr(all_args, 'max_neighbors', 3)
-    gui = getattr(all_args, 'render', False)
-    w_tilt = getattr(all_args, 'w_tilt', 0.5)
-    tilt_soft_threshold = getattr(all_args, 'tilt_soft_threshold', 0.35)
-    
-    env = PyBulletDroneWrapper(
-        num_drones=num_drones,
-        max_neighbors=max_neighbors,
-        gui=gui,
-        w_tilt=w_tilt,
-        tilt_soft_threshold=tilt_soft_threshold,
-    )
-    
-    return env
+    return PyBulletDroneWrapper(gui=gui, **env_kwargs_from_args(all_args))

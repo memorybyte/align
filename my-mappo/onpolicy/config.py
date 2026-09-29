@@ -194,6 +194,29 @@ def get_config():
                         help="Minimum number of neighbor slots filled (closest are always included even if outside radius)")
     parser.add_argument("--max_dynamic_neighbours", type=int, default=8,
                         help="Maximum number of neighbor slots (defines obs_dim). Slots beyond actual neighbors are zero-padded.")
+    parser.add_argument('--formation_type', type=str, default='polygon',
+                        choices=['polygon', 'line', 'plane', 'cube', 'sphere', 'pyramid', 'dynamic'],
+                        help="Formation geometry for training/eval episodes. 'dynamic' samples one of cube/sphere/pyramid/plane each episode")
+    parser.add_argument("--formation_spacing", type=float, default=1.0,
+                        help="Inter-drone distance in the formation template (meters)")
+    parser.add_argument("--target_distance_min", type=float, default=0.5,
+                        help="Minimum distance (m) between initial formation center and target center")
+    parser.add_argument("--target_distance_max", type=float, default=2.0,
+                        help="Maximum distance (m) between initial formation center and target center")
+    # drone reward weights (defaults reproduce the original training setup)
+    parser.add_argument("--w_form", type=float, default=0.0,
+                        help="Weight of the Procrustes formation reward (0 disables it)")
+    parser.add_argument("--w_nav", type=float, default=10.0, help="Weight of the navigation (progress) reward")
+    parser.add_argument("--w_avoid", type=float, default=2.0, help="Weight of the inter-drone collision penalty")
+    parser.add_argument("--w_tilt", type=float, default=5.0, help="Weight of the soft tilt penalty")
+    parser.add_argument("--w_smooth", type=float, default=0.5,
+                        help="Weight of the action smoothness penalty (0 for the no-smoothing ablation)")
+    parser.add_argument("--tilt_soft_threshold", type=float, default=0.35,
+                        help="Roll/pitch (rad) above which the tilt penalty is applied")
+    parser.add_argument("--collision_dist", type=float, default=0.1,
+                        help="Inter-drone distance (m) counted as a collision")
+    parser.add_argument("--success_dist", type=float, default=0.2,
+                        help="Distance (m) to target counted as reached (reaching bonus, success, logging)")
 
     # replay buffer parameters
     parser.add_argument("--episode_length", type=int,

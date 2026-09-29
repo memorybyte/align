@@ -316,25 +316,11 @@ class PyBulletDroneRunner(Runner):
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
         action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
         
-        # RNN states need special handling
-        rnn_states_np = _t2n(rnn_states)
-        rnn_states_critic_np = _t2n(rnn_states_critic)
-        
-        # Policy returns shape: (recurrent_N, n_rollout * n_agents, hidden_size)
-        # or with batching: (recurrent_N, n_rollout, n_agents, hidden_size)
-        # Buffer expects: (n_rollout, n_agents, recurrent_N, hidden_size)
-        
-        if len(rnn_states_np.shape) == 4:
-            rnn_states = rnn_states_np.transpose(1, 2, 0, 3)
-            rnn_states_critic = rnn_states_critic_np.transpose(1, 2, 0, 3)
-        elif len(rnn_states_np.shape) == 3:
-            batch_size = rnn_states_np.shape[1]
-            rnn_states_reshaped = rnn_states_np.reshape(self.recurrent_N, self.n_rollout_threads, self.num_agents, self.hidden_size)
-            rnn_states_critic_reshaped = rnn_states_critic_np.reshape(self.recurrent_N, self.n_rollout_threads, self.num_agents, self.hidden_size)
-            rnn_states = rnn_states_reshaped.transpose(1, 2, 0, 3)
-            rnn_states_critic = rnn_states_critic_reshaped.transpose(1, 2, 0, 3)
-        else:
-            raise ValueError(f"Unexpected rnn_states shape: {rnn_states_np.shape}")
+        # Policy returns (n_rollout * n_agents, recurrent_N, hidden_size), agent-major
+        # like every other batched tensor here. Buffer expects
+        # (n_rollout, n_agents, recurrent_N, hidden_size).
+        rnn_states = np.array(np.split(_t2n(rnn_states), self.n_rollout_threads))
+        rnn_states_critic = np.array(np.split(_t2n(rnn_states_critic), self.n_rollout_threads))
         
         # Actions are v_des = [vx, vy, vz, throttle] in [-1, 1]
         actions_env = actions.copy()
@@ -599,7 +585,8 @@ class PyBulletDroneRunner(Runner):
             total_num_steps: Current total training steps (for logging)
         """
         eval_episode_rewards = []
-        eval_obs, eval_share_obs = self.eval_envs.reset()
+        eval_formation_errors = []
+        eval_obs, eval_share_obs, _ = self.eval_envs.reset()
         
         eval_rnn_states = np.zeros(
             (self.n_eval_rollout_threads, *self.buffer.rnn_states.shape[2:]), 
@@ -624,33 +611,29 @@ class PyBulletDroneRunner(Runner):
             eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
             
             # Step environment
-            eval_obs, eval_share_obs, eval_rewards, eval_dones, eval_infos = \
+            eval_obs, eval_share_obs, eval_rewards, eval_dones, eval_infos, _ = \
                 self.eval_envs.step(eval_actions)
             eval_episode_rewards.append(eval_rewards)
+            for env_info in eval_infos:
+                if len(env_info) > 0 and 'formation_error' in env_info[0]:
+                    eval_formation_errors.append(env_info[0]['formation_error'])
             
             # Reset RNN states for done episodes
-            eval_dones_arr = np.array(eval_dones)
-            if len(eval_dones_arr.shape) == 1:
-                eval_dones_arr = np.expand_dims(eval_dones_arr, 0)
-            
-            eval_rnn_states[eval_dones_arr == True] = np.zeros(
-                ((eval_dones_arr == True).sum(), self.recurrent_N, self.hidden_size), 
-                dtype=np.float32
-            )
+            eval_dones_arr = np.array(eval_dones).reshape(self.n_eval_rollout_threads, self.num_agents)
+            eval_rnn_states[eval_dones_arr] = 0.0
             eval_masks = np.ones(
                 (self.n_eval_rollout_threads, self.num_agents, 1), 
                 dtype=np.float32
             )
-            eval_masks[eval_dones_arr == True] = np.zeros(
-                ((eval_dones_arr == True).sum(), 1), 
-                dtype=np.float32
-            )
+            eval_masks[eval_dones_arr] = 0.0
         
         # Log evaluation results
         eval_episode_rewards = np.array(eval_episode_rewards)
         eval_env_infos = {
             'eval_average_episode_rewards': np.sum(eval_episode_rewards, axis=0)
         }
+        if eval_formation_errors:
+            eval_env_infos['eval_formation_error'] = eval_formation_errors
         eval_average_episode_rewards = np.mean(eval_env_infos['eval_average_episode_rewards'])
         print(f"Eval average episode rewards: {eval_average_episode_rewards}")
         self.log_env(eval_env_infos, total_num_steps)
@@ -1233,7 +1216,11 @@ class PyBulletDroneRunner(Runner):
                 box_labels.append(f'Ep {ep}')
         
         if box_data:
-            bp = ax2.boxplot(box_data, labels=box_labels, patch_artist=True)
+            # matplotlib >= 3.9 renamed `labels` to `tick_labels` (the old name was removed in 3.11)
+            try:
+                bp = ax2.boxplot(box_data, tick_labels=box_labels, patch_artist=True)
+            except TypeError:
+                bp = ax2.boxplot(box_data, labels=box_labels, patch_artist=True)
             for patch in bp['boxes']:
                 patch.set_facecolor('lightblue')
             ax2.axhline(y=0.05, color='r', linestyle='--', alpha=0.5, label='Goal threshold (5cm)')

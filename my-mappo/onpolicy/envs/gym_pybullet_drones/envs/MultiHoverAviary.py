@@ -355,6 +355,17 @@ class MultiHoverAviary(BaseRLAviary):
 
     ################################################################################
 
+    def _lift_center(self, center):
+        """Raise `center` so the lowest formation point is at least arena_z_range[0].
+
+        3-D templates (cube, sphere, pyramid) extend below their centroid. Clamping
+        individual drones to the floor would flatten the bottom layer and change the
+        formation shape, so the whole formation is lifted instead.
+        """
+        min_offset_z = float(np.min(self._formation_template[:, 2]))
+        center[2] = max(center[2], self._arena_z_range[0] - min_offset_z)
+        return center
+
     def _generate_formation_positions(self):
         """
         Generate drone positions from the formation template with random
@@ -370,6 +381,7 @@ class MultiHoverAviary(BaseRLAviary):
             np.random.uniform(-self._arena_xy_bound, self._arena_xy_bound),
             np.random.uniform(*self._arena_z_range),
         ])
+        center = self._lift_center(center)
         # yaw = np.random.uniform(0, 2 * np.pi)
         yaw = 0
         positions = _apply_formation(
@@ -407,6 +419,7 @@ class MultiHoverAviary(BaseRLAviary):
         target_center[0] = np.clip(target_center[0], -self._arena_xy_bound - 1, self._arena_xy_bound + 1)
         target_center[1] = np.clip(target_center[1], -self._arena_xy_bound - 1, self._arena_xy_bound + 1)
         target_center[2] = np.clip(target_center[2], self._arena_z_range[0], self._arena_z_range[1])
+        target_center = self._lift_center(target_center)
         
         # Random yaw at target (may differ from initial yaw for rotation invariance)
         # target_yaw = np.random.uniform(0, 2 * np.pi)

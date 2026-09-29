@@ -9,8 +9,12 @@ import torch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from onpolicy.config import get_config
-from onpolicy.envs.pybullet_drone_env import PyBulletDroneWrapper
+from onpolicy.envs.pybullet_drone_env import make_pybullet_drone_env
 from onpolicy.envs.env_wrappers import ShareDummyVecEnv, ShareSubprocVecEnv
+
+
+# ctrl_freq (30 Hz) * EPISODE_LEN_SEC (8 s) in PyBulletDroneWrapper / MultiHoverAviary
+EPISODE_LENGTH = 240
 
 
 def make_train_env(all_args):
@@ -25,16 +29,7 @@ def make_train_env(all_args):
     """
     def get_env_fn(rank):
         def init_env():
-            env = PyBulletDroneWrapper(
-                num_drones=all_args.num_drones,
-                gui=False,  # No GUI for training
-                formation_spacing=1.0,
-                formation_type=all_args.formation_type,
-                max_neighbors=all_args.max_neighbors,
-                neighbour_radius=all_args.neighbour_radius,
-                min_dynamic_neighbours=all_args.min_dynamic_neighbours,
-                max_dynamic_neighbours=all_args.max_dynamic_neighbours,
-            )
+            env = make_pybullet_drone_env(all_args, gui=False)  # No GUI for training
             env.seed(all_args.seed + rank * 1000)
             return env
         return init_env
@@ -57,16 +52,7 @@ def make_eval_env(all_args):
     """
     def get_env_fn(rank):
         def init_env():
-            env = PyBulletDroneWrapper(
-                num_drones=all_args.num_drones,
-                gui=False,
-                formation_spacing=1.0,
-                formation_type=all_args.formation_type,
-                max_neighbors=all_args.max_neighbors,
-                neighbour_radius=all_args.neighbour_radius,
-                min_dynamic_neighbours=all_args.min_dynamic_neighbours,
-                max_dynamic_neighbours=all_args.max_dynamic_neighbours,
-            )
+            env = make_pybullet_drone_env(all_args, gui=False)
             env.seed(all_args.seed * 50000 + rank * 10000)
             return env
         return init_env
@@ -84,11 +70,6 @@ def parse_args(args, parser):
     Adds environment-specific arguments to the base MAPPO config.
 
     """
-    parser.add_argument('--use_formation_reward', action='store_true', default=True,
-                        help="Use formation-based reward")
-    parser.add_argument('--formation_type', type=str, default='polygon',
-                        choices=['polygon', 'line', 'plane', 'cube', 'sphere', 'pyramid', 'dynamic'],
-                        help="Formation geometry for training/eval episodes. 'dynamic' samples one of cube/sphere/pyramid/plane each episode")
     parser.add_argument('--resume_checkpoint', type=str, default=None,
                         help="Path to full-state resume checkpoint (.pt). If set, resumes optimizer/RNG/progress too")
     parser.add_argument('--resume_partial_checkpoint', type=str, default=None,
@@ -136,9 +117,8 @@ def main(args):
     all_args.gamma = 0.99
     all_args.gae_lambda = 0.95
     all_args.clip_param = 0.2
-    # Episode_length = 242, hidden_size = 256
     # With ctrl_freq=30 (default) and 8s episodes: 8*30 = 240 steps
-    all_args.episode_length = 240
+    all_args.episode_length = EPISODE_LENGTH
     all_args.hidden_size = 256
     
     # CUDA setup

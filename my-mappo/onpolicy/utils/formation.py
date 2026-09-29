@@ -96,7 +96,7 @@ def compute_formation_error(
     
     # Formation error: mean squared error
     # Reference: E = (1/N) * sum_i || R p_i - t_i ||^2
-    E = total_error
+    E = total_error / N
     
     # Normalization factor: max pairwise distance squared of target formation
     G = compute_normalization_factor(target_formation)
