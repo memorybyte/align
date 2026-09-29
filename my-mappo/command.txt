@@ -1,0 +1,1 @@
+python onpolicy/scripts/train/train_pybullet_drones.py --num_drones 8 --num_env_steps 100000 --n_rollout_threads 6 --n_training_threads 6 --num_mini_batch 2 --save_interval 25 --experiment_name "malstm_gpu_100K"  --formation_type "dynamic" --neighbour_radius 1.0 --min_dynamic_neighbours 1 --max_dynamic_neighbours 7 
