@@ -30,6 +30,11 @@ REPORT_KEYS = (
     "time_to_form",
     "time_to_goal",
     "crashed",
+    "crash_ground",
+    "crash_flip",
+    "crash_bounds",
+    "crash_drone_collision",
+    "crash_obstacle_collision",
     "return",
     "episode_len",
 )

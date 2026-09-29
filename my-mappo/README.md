@@ -73,7 +73,31 @@ python onpolicy/scripts/train/train_pybullet_drones.py \
 - `--neighbour_radius`: dynamic-neighbor radius in meters (`0` disables dynamic neighbors)
 - `--min_dynamic_neighbours`: minimum filled neighbor slots
 - `--max_dynamic_neighbours`: maximum neighbor slots / fixed observation capacity
-- `--episode_len_sec`: environment episode duration in seconds
+- `--formation_spacing`, `--target_distance_min`, `--target_distance_max`: formation size and
+  start-target distance (m)
+- `--w_form`, `--w_nav`, `--w_avoid`, `--w_tilt`, `--w_smooth`: reward weights (defaults reproduce the
+  original setup; e.g. `--w_smooth 0` for the no-smoothing ablation, `--w_form 1` to actually use
+  the formation reward)
+- `--success_dist`, `--collision_dist`, `--tilt_soft_threshold`: thresholds
+
+The episode length is fixed to 240 steps (8 s at 30 Hz).
+
+### Rendering
+
+Rendering must use the same environment flags as training (observation size):
+
+```bash
+./render_drones.sh <run_dir>/models 8 3          # defaults match the training command above
+./render_drones.sh <run_dir>/models 8 3 --formation_type cube
+```
+
+### Tests
+
+```bash
+PYTHONPATH=. pytest tests -q   # LSTM rollout/training consistency, formation placement and error
+```
+
+See `../docs/AUDIT.md` for the list of bugs fixed after the original submission.
 
 ### Resume options
 

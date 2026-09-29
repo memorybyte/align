@@ -81,7 +81,8 @@ def main():
         if finished and sum(f.shape[0] for f in finished) >= args.num_envs // 2:
             stats = torch.cat(finished)
             for k in ("return", "success", "formation_error", "slot_error", "progress", "crashed",
-                      "collisions_obstacle", "episode_len", "hold_ratio"):
+                      "collisions_obstacle", "episode_len", "hold_ratio", "crash_ground", "crash_flip",
+                      "crash_bounds", "crash_drone_collision", "crash_obstacle_collision"):
                 info[f"train/{k}"] = stats.get(k).float().mean().item()
             finished.clear()
             print(

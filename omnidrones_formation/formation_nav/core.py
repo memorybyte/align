@@ -56,6 +56,11 @@ STAT_KEYS = (
     "time_to_form",
     "time_to_goal",
     "crashed",
+    "crash_ground",
+    "crash_flip",
+    "crash_bounds",
+    "crash_drone_collision",
+    "crash_obstacle_collision",
     "scenario",
     "formation_id",
 )
@@ -796,6 +801,15 @@ class FormationNavCore:
             crash = crash | drone_collision | obstacle_collision
         terminated = crash.any(dim=-1, keepdim=True)
         reward = reward - cfg.w_crash * terminated.float()
+        causes = {
+            "crash_ground": low,
+            "crash_flip": flipped | nan,
+            "crash_bounds": oob,
+            "crash_drone_collision": drone_collision,
+            "crash_obstacle_collision": obstacle_collision,
+        }
+        for k, v in causes.items():
+            self.stats[k] = torch.maximum(self.stats[k], (v.any(-1, keepdim=True) & terminated).float())
 
         # --- stats ---------------------------------------------------------------------------
         st, acc = self.stats, self._acc

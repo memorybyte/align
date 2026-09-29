@@ -225,6 +225,8 @@ def test_drone_collision_and_ground_crash_terminate():
     core.advance()
     reward, terminated = core.update(pos, torch.zeros_like(pos), up, torch.zeros(2, n, core.cfg.action_dim))
     assert terminated.tolist() == [[True], [False]]
+    assert core.stats["crash_drone_collision"][:, 0].tolist() == [1.0, 0.0]
+    assert core.stats["crash_ground"][:, 0].tolist() == [0.0, 0.0]
     # env 1 teleported the same way but did not collide: the only extra term is the crash penalty
     assert (reward[0].mean() - reward[1].mean()).item() < -core.cfg.w_crash + 2.0
 
