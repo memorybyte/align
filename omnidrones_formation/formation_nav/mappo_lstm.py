@@ -66,6 +66,10 @@ class MAPPOLSTMConfig:
     # (0: constant lr; -1: the training script fills in the total number of iterations)
     lr_decay_iters: int = -1
     lr_final_frac: float = 0.1
+    # input normalisation: "running" = per-feature running mean/std (updated after each PPO
+    # update, so rollout and update of a batch use the same statistics); "layernorm" =
+    # LayerNorm across the raw features as in the original my-mappo code
+    input_norm: str = "running"
 
     @classmethod
     def from_any(cls, cfg) -> "MAPPOLSTMConfig":
@@ -81,13 +85,44 @@ class MAPPOLSTMConfig:
         return cls(**{k: v for k, v in cfg.items() if k in names})
 
 
+class RunningNorm(nn.Module):
+    """Per-feature running mean / std normalisation of the network input."""
+
+    def __init__(self, dim: int, clip: float = 10.0):
+        super().__init__()
+        self.clip = clip
+        self.register_buffer("mean", torch.zeros(dim))
+        self.register_buffer("var", torch.ones(dim))
+        self.register_buffer("count", torch.tensor(1e-4))
+
+    @torch.no_grad()
+    def update(self, x: torch.Tensor):
+        x = x.reshape(-1, x.shape[-1])
+        b_mean, b_var, b_count = x.mean(0), x.var(0, unbiased=False), x.shape[0]
+        delta = b_mean - self.mean
+        total = self.count + b_count
+        new_var = (self.var * self.count + b_var * b_count + delta.square() * self.count * b_count / total) / total
+        # in place: TorchRL's collector acts with a copy of the policy that shares these buffers
+        self.mean.add_(delta * b_count / total)
+        self.var.copy_(new_var)
+        self.count.copy_(total)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return ((x - self.mean) / (self.var.sqrt() + 1e-6)).clamp(-self.clip, self.clip)
+
+
 class FCLSTMFC(nn.Module):
     """FC -> LSTM -> FC backbone of the paper (Fig. 1/2)."""
 
-    def __init__(self, in_dim: int, out_dim: int, hidden: int, out_gain: float):
+    def __init__(self, in_dim: int, out_dim: int, hidden: int, out_gain: float, input_norm: str = "running"):
         super().__init__()
         self.hidden = hidden
-        self.in_norm = nn.LayerNorm(in_dim)
+        if input_norm == "running":
+            self.in_norm = RunningNorm(in_dim)
+        elif input_norm == "layernorm":
+            self.in_norm = nn.LayerNorm(in_dim)
+        else:
+            raise ValueError(f"input_norm must be 'running' or 'layernorm', got {input_norm!r}")
         self.fc = nn.Linear(in_dim, hidden)
         self.fc_norm = nn.LayerNorm(hidden)
         self.cell = nn.LSTMCell(hidden, hidden)
@@ -177,9 +212,9 @@ class MAPPOLSTM(TensorDictModuleBase):
         state_dim = observation_spec[STATE_KEY].shape[-1]
         H = self.cfg.hidden_size
 
-        self.actor = FCLSTMFC(obs_dim, self.action_dim, H, out_gain=0.01)
+        self.actor = FCLSTMFC(obs_dim, self.action_dim, H, out_gain=0.01, input_norm=self.cfg.input_norm)
         self.log_std = nn.Parameter(torch.full((self.action_dim,), float(self.cfg.log_std_init)))
-        self.critic = FCLSTMFC(state_dim, self.num_agents, H, out_gain=1.0)
+        self.critic = FCLSTMFC(state_dim, self.num_agents, H, out_gain=1.0, input_norm=self.cfg.input_norm)
         self.value_norm = ValueNorm(self.cfg.value_norm_beta)
         self.to(self.device)
 
@@ -285,6 +320,11 @@ class MAPPOLSTM(TensorDictModuleBase):
                 infos.append(self._update(chunks[idx]))
         out = {k: torch.stack([i[k] for i in infos]).mean().item() for k in infos[0]}
         out["lr"] = self._step_lr()
+        # refresh the input statistics only now: this batch was collected and optimised with
+        # the same statistics, the next rollout uses the updated ones
+        if isinstance(self.actor.in_norm, RunningNorm):
+            self.actor.in_norm.update(td.get(OBS_KEY))
+            self.critic.in_norm.update(td.get(STATE_KEY))
         return out
 
     def _step_lr(self) -> float:

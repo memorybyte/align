@@ -109,3 +109,24 @@ def test_linear_lr_decay_reaches_the_final_fraction():
     assert lrs[0] == pytest.approx(1e-3 * (1 - 0.9 * 0.25))
     assert lrs[3] == pytest.approx(1e-4) and lrs[5] == pytest.approx(1e-4)
     assert policy.critic_opt.param_groups[0]["lr"] == pytest.approx(0.1 * policy.cfg.critic_lr)
+
+
+def test_running_input_normalisation_updates_after_the_ppo_update():
+    env, policy, collector = make()
+    it = iter(collector)
+    data = next(it).to_tensordict()
+    assert torch.equal(policy.actor.in_norm.mean, torch.zeros_like(policy.actor.in_norm.mean))
+    policy.train_op(data)
+    obs = data["agents", "observation"].reshape(-1, data["agents", "observation"].shape[-1])
+    torch.testing.assert_close(policy.actor.in_norm.mean, obs.mean(0), atol=1e-3, rtol=1e-3)
+    # the next batch is collected with the new statistics, so its ratio is still exactly 1
+    data = next(it).to_tensordict()
+    E, T = data.shape
+    L = ALGO["seq_len"]
+    chunks = data[:, : (T // L) * L].reshape(E, T // L, L).reshape(-1, L)
+    o = chunks["agents", "observation"]
+    with torch.no_grad():
+        loc = policy.actor.unroll(o, chunks["actor_h"][:, 0], chunks["actor_c"][:, 0],
+                                  chunks["is_init"].unsqueeze(-2).expand(*o.shape[:-1], 1))
+        logp = policy._dist(loc).log_prob(chunks["agents", "action"]).sum(-1)
+    torch.testing.assert_close(logp, chunks["sample_log_prob"], atol=1e-4, rtol=1e-4)
