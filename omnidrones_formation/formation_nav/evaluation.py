@@ -8,7 +8,7 @@ so the same policy can be compared with and without obstacles.
 
 import json
 import math
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, Optional
 
 import torch
 from tensordict import TensorDictBase

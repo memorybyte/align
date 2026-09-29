@@ -31,7 +31,7 @@ from typing import Dict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensordict import TensorDict, TensorDictBase
+from tensordict import TensorDictBase
 from tensordict.nn import TensorDictModuleBase
 from torchrl.data import CompositeSpec, TensorSpec
 from torchrl.envs.utils import ExplorationType, exploration_type
