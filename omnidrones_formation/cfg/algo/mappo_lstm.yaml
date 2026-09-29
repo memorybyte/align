@@ -17,3 +17,5 @@ gamma: 0.99
 gae_lambda: 0.95
 log_std_init: -0.5
 value_norm_beta: 0.995
+lr_decay_iters: -1       # linear decay over the whole run (-1: filled in by the train script, 0: off)
+lr_final_frac: 0.1

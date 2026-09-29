@@ -70,15 +70,17 @@ def main(cfg):
     env = TransformedEnv(base_env, Compose(InitTracker())).train()
     env.set_seed(cfg.seed)
 
+    frames_per_batch = env.num_envs * int(cfg.algo.train_every)
+    total_frames = cfg.get("total_frames", -1) // frames_per_batch * frames_per_batch
+    max_iters = cfg.get("max_iters", -1)
+    if cfg.algo.get("lr_decay_iters", 0) == -1:
+        cfg.algo.lr_decay_iters = max_iters if max_iters > 0 else total_frames // frames_per_batch
+
     policy = ALGOS[cfg.algo.name.lower()](
         cfg.algo, env.observation_spec, env.action_spec, env.reward_spec, device=base_env.device
     )
     if cfg.get("checkpoint_path"):
         load_policy_checkpoint(policy, cfg.checkpoint_path)
-
-    frames_per_batch = env.num_envs * int(cfg.algo.train_every)
-    total_frames = cfg.get("total_frames", -1) // frames_per_batch * frames_per_batch
-    max_iters = cfg.get("max_iters", -1)
     eval_interval = cfg.get("eval_interval", -1)
     save_interval = cfg.get("save_interval", -1)
 

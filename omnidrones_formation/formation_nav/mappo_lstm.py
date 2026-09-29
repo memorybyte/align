@@ -62,6 +62,10 @@ class MAPPOLSTMConfig:
     gae_lambda: float = 0.95
     log_std_init: float = -0.5
     value_norm_beta: float = 0.995
+    # linear learning-rate decay to lr_final_frac * lr over this many train_op calls
+    # (0: constant lr; -1: the training script fills in the total number of iterations)
+    lr_decay_iters: int = -1
+    lr_final_frac: float = 0.1
 
     @classmethod
     def from_any(cls, cfg) -> "MAPPOLSTMConfig":
@@ -184,6 +188,7 @@ class MAPPOLSTM(TensorDictModuleBase):
 
         self.actor_opt = torch.optim.Adam(list(self.actor.parameters()) + [self.log_std], lr=self.cfg.lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=self.cfg.critic_lr)
+        self.num_updates = 0
 
     # ------------------------------------------------------------------------------------
     # acting
@@ -278,7 +283,20 @@ class MAPPOLSTM(TensorDictModuleBase):
             perm = torch.randperm(chunks.shape[0], device=chunks.device)
             for idx in perm.chunk(cfg.num_minibatches):
                 infos.append(self._update(chunks[idx]))
-        return {k: torch.stack([i[k] for i in infos]).mean().item() for k in infos[0]}
+        out = {k: torch.stack([i[k] for i in infos]).mean().item() for k in infos[0]}
+        out["lr"] = self._step_lr()
+        return out
+
+    def _step_lr(self) -> float:
+        self.num_updates += 1
+        frac = 1.0
+        if self.cfg.lr_decay_iters > 0:
+            progress = min(self.num_updates / self.cfg.lr_decay_iters, 1.0)
+            frac = 1.0 - (1.0 - self.cfg.lr_final_frac) * progress
+        for opt, base in ((self.actor_opt, self.cfg.lr), (self.critic_opt, self.cfg.critic_lr)):
+            for group in opt.param_groups:
+                group["lr"] = base * frac
+        return self.cfg.lr * frac
 
     def _update(self, chunk: TensorDictBase) -> Dict[str, torch.Tensor]:
         cfg = self.cfg
@@ -342,6 +360,7 @@ class MAPPOLSTM(TensorDictModuleBase):
             "model": self.state_dict(),
             "actor_opt": self.actor_opt.state_dict(),
             "critic_opt": self.critic_opt.state_dict(),
+            "num_updates": self.num_updates,
         }
 
     def load_checkpoint(self, ckpt: dict, actor_only: bool = False):
@@ -359,3 +378,4 @@ class MAPPOLSTM(TensorDictModuleBase):
         if "actor_opt" in ckpt:
             self.actor_opt.load_state_dict(ckpt["actor_opt"])
             self.critic_opt.load_state_dict(ckpt["critic_opt"])
+        self.num_updates = int(ckpt.get("num_updates", 0))

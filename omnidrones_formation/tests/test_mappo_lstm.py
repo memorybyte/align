@@ -99,3 +99,13 @@ def test_actor_only_checkpoint_runs_on_a_larger_swarm():
     torch.testing.assert_close(other.actor.fc.weight, policy.actor.fc.weight)
     td = other(big.reset())
     assert td["agents", "action"].shape == (2, 8, 4)
+
+
+def test_linear_lr_decay_reaches_the_final_fraction():
+    env, _, _ = make()
+    policy = MAPPOLSTM(dict(ALGO, lr=1e-3, lr_decay_iters=4, lr_final_frac=0.1),
+                       env.observation_spec, env.action_spec, env.reward_spec)
+    lrs = [policy._step_lr() for _ in range(6)]
+    assert lrs[0] == pytest.approx(1e-3 * (1 - 0.9 * 0.25))
+    assert lrs[3] == pytest.approx(1e-4) and lrs[5] == pytest.approx(1e-4)
+    assert policy.critic_opt.param_groups[0]["lr"] == pytest.approx(0.1 * policy.cfg.critic_lr)

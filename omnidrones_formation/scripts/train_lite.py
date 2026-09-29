@@ -58,7 +58,7 @@ def main():
     )
     base = FormationNavLite(task, args.num_envs, args.max_episode_length, device=args.device, seed=args.seed)
     env = TransformedEnv(base, InitTracker())
-    algo = dict(train_every=args.train_every, hidden_size=args.hidden_size)
+    algo = dict(train_every=args.train_every, hidden_size=args.hidden_size, lr_decay_iters=args.iters)
     policy = MAPPOLSTM(algo, env.observation_spec, env.action_spec, env.reward_spec, device=args.device)
     collector = SyncDataCollector(
         env, policy, frames_per_batch=args.num_envs * args.train_every, total_frames=-1,
@@ -68,6 +68,7 @@ def main():
     log = open(os.path.join(args.out, "log.jsonl"), "w")
     start = time.time()
     finished = []
+    best = -float("inf")
     for i, data in enumerate(collector):
         if i >= args.iters:
             break
@@ -85,6 +86,9 @@ def main():
                       "crash_bounds", "crash_drone_collision", "crash_obstacle_collision"):
                 info[f"train/{k}"] = stats.get(k).float().mean().item()
             finished.clear()
+            if info["train/return"] > best:
+                best = info["train/return"]
+                torch.save(policy.checkpoint(), os.path.join(args.out, "checkpoint_best.pt"))
             print(
                 f"[{i:4d}] frames {info['frames']:>9d}  return {info['train/return']:8.2f}  "
                 f"success {info['train/success']:.2f}  progress {info['train/progress']:.2f}  "
