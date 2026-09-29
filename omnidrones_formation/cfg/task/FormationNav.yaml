@@ -71,6 +71,7 @@ drone_radius: 0.25
 collision_dist: 0.35
 safe_dist: 0.7
 obstacle_safe_dist: 0.6
+relax_dist: 0.0                    # >0: scale slot-tracking rewards down within this clearance of obstacles
 crash_height: 0.2
 takeoff_grace: 150
 max_tilt: 1.2

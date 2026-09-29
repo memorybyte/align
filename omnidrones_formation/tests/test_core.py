@@ -300,3 +300,25 @@ def test_velocity_action_mapping():
     v = core.action_to_velocity(a)
     assert torch.allclose(v[0, 0], torch.tensor([0.5 * core.cfg.max_speed, 0.0, 0.0]))
     assert torch.allclose(v[0, 1], torch.tensor([0.0, 0.0, -core.cfg.max_speed]))
+
+
+def test_formation_relaxation_near_obstacles():
+    """Close to an obstacle, moving away from the slot is not penalised by the tracking terms."""
+    kw = dict(num_envs=1, scenario="mixed", num_static=(1, 1), num_dynamic=(0, 0), w_slot=0, w_reached=0,
+              w_form=0, w_avoid=0, w_obstacle=0, w_tilt=0, w_smooth=0, w_hold=0, takeoff_grace=10_000)
+    rewards = {}
+    for relax in (0.0, 1.0):
+        core, start = make_core(relax_dist=relax, **kw)
+        n = core.n
+        _, up = attitude(1, n)
+        core.obs_active[:] = True
+        core.obs_anchor[0, 0] = start[0, 0] + torch.tensor([0.5, 0.0, 0.0])  # pillar next to drone 0
+        core.obs_radius[0, 0] = 0.1
+        pos = start.clone()
+        pos[0, 0, 2] -= 0.05  # drone 0 moves away from its slot (which is above)
+        core.advance()
+        reward, _ = core.update(pos, torch.zeros_like(pos), up, torch.zeros(1, n, 4))
+        rewards[relax] = reward[0, 0, 0].item()
+    assert rewards[0.0] < 0  # progress penalty without relaxation
+    assert rewards[1.0] > rewards[0.0]  # clearance 0.4 m of 1.0 m: penalty scaled to 40 %
+    assert rewards[1.0] == pytest.approx(0.4 * rewards[0.0], rel=1e-3)

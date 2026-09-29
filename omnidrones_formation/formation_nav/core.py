@@ -126,6 +126,10 @@ class FormationNavConfig:
     collision_dist: float = 0.35  # drone-drone centre distance counted as a collision
     safe_dist: float = 0.7  # separation below which the avoidance penalty starts
     obstacle_safe_dist: float = 0.6  # obstacle clearance below which the penalty starts
+    # formation relaxation: within this clearance of an obstacle the slot-tracking rewards
+    # (progress, proximity, reaching) are scaled down linearly, so leaving the slot to go
+    # around an obstacle is not punished (0 disables)
+    relax_dist: float = 0.0
     crash_height: float = 0.2  # below this after `takeoff_grace` steps = crash (must exceed spawn_height)
     takeoff_grace: int = 150  # steps during which being near the ground is not a crash
     max_tilt: float = 1.2  # rad
@@ -764,6 +768,9 @@ class FormationNavCore:
         min_clear = surf.min(dim=-1).values if self.M > 0 else torch.full((E, n), float("inf"), device=self.device)
         r_obstacle = -(1.0 - min_clear / cfg.obstacle_safe_dist).clamp(0.0, 1.0).square()
         obstacle_collision = min_clear < cfg.drone_radius
+        if cfg.relax_dist > 0:
+            relax = (min_clear / cfg.relax_dist).clamp(0.0, 1.0)
+            r_nav, r_slot, r_reached = r_nav * relax, r_slot * relax, r_reached * relax
 
         tilt = torch.acos(up[..., 2].clamp(-1.0, 1.0))
         r_tilt = -(tilt - cfg.tilt_soft).clamp_min(0.0).square()

@@ -11,6 +11,7 @@ Example:
 """
 
 import argparse
+import ast
 import json
 import os
 import sys
@@ -25,6 +26,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 from formation_nav import FormationNavConfig, MAPPOLSTM  # noqa: E402
 from formation_nav.evaluation import evaluate_scenarios, format_table, save_results  # noqa: E402
 from formation_nav.pointmass_env import FormationNavLite  # noqa: E402
+
+
+def task_overrides(pairs):
+    """--set key=value ... -> dict (values parsed as Python literals when possible)."""
+    out = {}
+    for item in pairs or []:
+        key, value = item.split("=", 1)
+        try:
+            out[key] = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            out[key] = value
+    return out
 
 
 def parse():
@@ -43,6 +56,8 @@ def parse():
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--out", default="runs/lite")
     p.add_argument("--eval_envs", type=int, default=64)
+    p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
+                   help="override FormationNavConfig fields, e.g. --set relax_dist=1.0 w_obstacle=3")
     return p.parse_args()
 
 
@@ -55,6 +70,7 @@ def main():
         formation=args.formation,
         scenario=args.scenario,
         goal_distance=(args.goal_min, args.goal_max),
+        **task_overrides(args.set),
     )
     base = FormationNavLite(task, args.num_envs, args.max_episode_length, device=args.device, seed=args.seed)
     env = TransformedEnv(base, InitTracker())

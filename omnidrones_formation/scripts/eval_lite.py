@@ -15,10 +15,12 @@ import torch
 from torchrl.envs.transforms import InitTracker, TransformedEnv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from formation_nav import FormationNavConfig, MAPPOLSTM  # noqa: E402
 from formation_nav.evaluation import evaluate_scenarios, format_table, save_results  # noqa: E402
 from formation_nav.pointmass_env import FormationNavLite  # noqa: E402
+from train_lite import task_overrides  # noqa: E402
 
 
 def main():
@@ -35,6 +37,7 @@ def main():
     p.add_argument("--hidden_size", type=int, default=256)
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--out", default="runs/lite_eval")
+    p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="override FormationNavConfig fields")
     args = p.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -42,6 +45,7 @@ def main():
         num_drones=args.num_drones,
         formation_pool=tuple(args.formation_pool),
         goal_distance=(args.goal_min, args.goal_max),
+        **task_overrides(args.set),
     )
     base = FormationNavLite(task, args.num_envs, args.max_episode_length, seed=args.seed)
     env = TransformedEnv(base, InitTracker())
