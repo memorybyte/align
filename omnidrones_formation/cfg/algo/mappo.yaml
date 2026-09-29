@@ -1,0 +1,7 @@
+# OmniDrones' built-in MLP MAPPO (omni_drones/learning/mappo_new.py), as a non-recurrent baseline.
+name: mappo
+
+train_every: 64
+num_minibatches: 16
+ppo_epochs: 4
+share_actor: true   # one policy shared by all drones, as in the paper

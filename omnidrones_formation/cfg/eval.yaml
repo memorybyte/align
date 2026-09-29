@@ -1,0 +1,38 @@
+headless: true
+
+sim: ${task.sim}
+env: ${task.env}
+
+seed: 1234
+checkpoint_path: ???          # required
+output_dir: eval_results
+
+eval_scenarios: [none, static, dynamic, mixed]
+eval_formations: [null]       # null = sample from the pool; e.g. [cube, sphere, pyramid, plane]
+eval_record_video: true
+video_interval: 2             # record every n-th step
+
+viewer:
+  resolution: [960, 720]
+  eye: [-7., -7., 5.]
+  lookat: [0., 0., 1.]
+
+wandb:
+  group: ${oc.select:..task.name}
+  run_name: eval-${oc.select:..task.name,test}
+  job_type: eval
+  entity:
+  project: formation-nav
+  mode: disabled
+  run_id:
+  monitor_gym: False
+  tags:
+
+defaults:
+  - task: FormationNav
+  - algo: mappo_lstm
+  - _self_
+
+task:
+  env:
+    num_envs: 64

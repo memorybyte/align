@@ -1,0 +1,36 @@
+headless: true
+
+sim: ${task.sim}
+env: ${task.env}
+
+total_frames: 300_000_000
+max_iters: -1
+eval_interval: 300        # iterations; -1 disables periodic evaluation
+save_interval: 300
+seed: 0
+checkpoint_path: null     # warm start / resume from a checkpoint (e.g. a lite-trained actor)
+
+# scenarios run at every evaluation (one deterministic episode per env each)
+eval_scenarios: [none, static, dynamic, mixed]
+eval_record_video: true
+
+viewer:
+  resolution: [960, 720]
+  eye: [-7., -7., 5.]
+  lookat: [0., 0., 1.]
+
+wandb:
+  group: ${oc.select:..task.name}
+  run_name: ${oc.select:..task.name,test}-${oc.select:..algo.name,none}
+  job_type: train
+  entity:
+  project: formation-nav
+  mode: online  # 'disabled' to run without wandb
+  run_id:
+  monitor_gym: True
+  tags:
+
+defaults:
+  - task: FormationNav
+  - algo: mappo_lstm
+  - _self_

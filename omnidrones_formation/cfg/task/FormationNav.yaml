@@ -1,0 +1,99 @@
+name: FormationNav
+
+defaults:
+  # see https://hydra.cc/docs/advanced/overriding_packages/
+  - /base/env_base@_here_
+  - /base/sim_base@_here_
+
+env:
+  num_envs: 512
+  env_spacing: 40          # routes are up to ~15 m long in a random direction
+  max_episode_length: 800  # 800 * 0.032 s = 25.6 s (take-off + ~14 m + hold)
+
+sim:
+  dt: 0.016
+  substeps: 2              # policy at 31.25 Hz, velocity controller at 62.5 Hz
+
+drone_model:
+  name: Hummingbird
+  controller: LeePositionController
+
+# ---------------- swarm and formation ----------------
+num_drones: 8
+formation: dynamic                 # plane|cube|sphere|pyramid|line|column|v|circle|dynamic|custom
+formation_pool: [cube, sphere, pyramid, plane]   # sampled per episode when formation=dynamic
+custom_formation: null             # formation=custom: list of num_drones [x, y, z] offsets (m), +x = travel direction
+formation_spacing: 1.2             # min distance between slots (m)
+formation_altitude: 1.5            # altitude of the lowest slot (m)
+ground_spacing: 1.2                # take-off grid spacing (m)
+spawn_height: 0.1
+goal_distance: [8.0, 14.0]         # start -> goal distance (m)
+random_heading: true
+
+# ---------------- waypoints (paper Sec. IV-E) ----------------
+waypoint_mode: discrete            # discrete (paper) | carrot
+waypoint_spacing: 1.0
+waypoint_reach_dist: 0.6
+carrot_speed: 1.0
+carrot_lead: 1.5
+target_obs_clip: 3.0
+
+# ---------------- phases ----------------
+form_tolerance: 0.35
+form_steps: 15
+form_timeout: 300
+hold_enter_dist: 0.5
+success_dist: 0.3
+hold_speed: 0.3
+
+# ---------------- local sensing ----------------
+neighbour_radius: 3.0
+max_neighbours: 7
+obstacle_sensing_range: 4.0
+max_obstacles_obs: 4
+
+# ---------------- obstacles ----------------
+scenario: train_mix                # none | static | dynamic | mixed | train_mix
+scenario_probs: [0.2, 0.3, 0.2, 0.3]   # none, static, dynamic, mixed (train_mix only)
+num_static: [3, 6]                 # [min, max] active pillars (max = number of pillar prims)
+num_dynamic: [1, 3]
+static_radius: [0.3, 0.6]
+static_height: 6.0
+dynamic_radius: [0.25, 0.4]
+dynamic_speed: [0.3, 1.0]
+dynamic_half_path: [2.0, 4.0]
+corridor_half_width: 2.5
+obstacle_clearance: 2.5            # keep goal_distance[0] >= 2 * obstacle_clearance + 1
+obstacle_physics_collision: false  # collisions are detected analytically; true makes prims solid
+
+# ---------------- safety / termination ----------------
+drone_radius: 0.25
+collision_dist: 0.35
+safe_dist: 0.7
+obstacle_safe_dist: 0.6
+crash_height: 0.2
+takeoff_grace: 150
+max_tilt: 1.2
+out_of_bounds: 8.0
+max_altitude: 5.0
+terminate_on_collision: true
+
+# ---------------- actions ----------------
+action_mode: dir_speed             # dir_speed (paper) | velocity
+max_speed: 1.5
+
+# ---------------- rewards ----------------
+w_nav: 5.0
+w_slot: 0.5
+slot_sigma: 0.5
+w_reached: 0.2
+w_form: 1.0                        # staged: active after the formation is built
+w_avoid: 1.0
+w_obstacle: 2.0
+w_tilt: 5.0
+tilt_soft: 0.35
+w_smooth: 0.05
+w_hold: 1.0
+w_crash: 10.0
+
+follow_camera: true

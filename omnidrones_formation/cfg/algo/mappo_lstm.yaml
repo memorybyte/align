@@ -1,0 +1,19 @@
+# MAPPO with the paper's FC-LSTM-FC actor and centralised critic (formation_nav/mappo_lstm.py)
+name: mappo_lstm
+
+train_every: 64          # rollout steps per env between updates
+ppo_epochs: 4
+num_minibatches: 8
+seq_len: 16              # BPTT chunk length
+hidden_size: 256
+lr: 0.0005
+critic_lr: 0.0005
+clip_param: 0.2
+entropy_coef: 0.001
+value_loss_coef: 1.0
+huber_delta: 10.0
+max_grad_norm: 10.0
+gamma: 0.99
+gae_lambda: 0.95
+log_std_init: -0.5
+value_norm_beta: 0.995
