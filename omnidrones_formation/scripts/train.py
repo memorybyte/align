@@ -58,13 +58,18 @@ def main(cfg):
     from omni_drones.utils.wandb import init_wandb
 
     import formation_nav.env  # noqa: F401  (registers FormationNav)
-    from formation_nav.evaluation import evaluate_scenarios, format_table
+    from formation_nav.evaluation import evaluate_scenarios, format_table, save_results
     from formation_nav.mappo_lstm import MAPPOLSTM
 
     ALGOS["mappo_lstm"] = MAPPOLSTM
 
     run = init_wandb(cfg)
     print(OmegaConf.to_yaml(cfg))
+    # everything is also written here, whatever the wandb mode
+    out = os.path.abspath(cfg.get("output_dir") or "runs/FormationNav")
+    os.makedirs(out, exist_ok=True)
+    OmegaConf.save(cfg, os.path.join(out, "config.yaml"))
+    print(f"[train] checkpoints and evaluation results go to {out}")
 
     base_env = IsaacEnv.REGISTRY[cfg.task.name](cfg, headless=cfg.headless)
     env = TransformedEnv(base_env, Compose(InitTracker())).train()
@@ -96,7 +101,9 @@ def main(cfg):
     )
 
     @torch.no_grad()
-    def evaluate():
+    def evaluate(tag: str):
+        eval_dir = os.path.join(out, f"eval_{tag}")
+        os.makedirs(eval_dir, exist_ok=True)
         base_env.enable_render(True)
         base_env.eval()
         env.eval()
@@ -110,16 +117,17 @@ def main(cfg):
 
         results = evaluate_scenarios(
             env, base_env, policy, base_env.max_episode_length,
-            scenarios=cfg.eval_scenarios, plot_dir=run.dir, callback_factory=callback_factory,
+            scenarios=cfg.eval_scenarios, plot_dir=eval_dir, callback_factory=callback_factory,
         )
         print(format_table(results))
+        save_results(results, os.path.join(eval_dir, "results.json"), os.path.join(eval_dir, "results.md"))
         info = {f"eval/{s}/{k}": v for s, r in results.items() for k, v in r.items()}
         for scenario, cb in callbacks.items():
             info[f"eval/{scenario}/recording"] = wandb.Video(
                 cb.get_video_array(axes="t c h w"), fps=0.5 / (cfg.sim.dt * cfg.sim.substeps), format="mp4"
             )
         for scenario in results:
-            png = os.path.join(run.dir, f"trajectory_{scenario}.png")
+            png = os.path.join(eval_dir, f"trajectory_{scenario}.png")
             if os.path.exists(png):
                 info[f"eval/{scenario}/trajectory"] = wandb.Image(png)
         base_env.enable_render(not cfg.headless)
@@ -145,10 +153,10 @@ def main(cfg):
 
         if eval_interval > 0 and i % eval_interval == 0 and i > 0:
             logging.info(f"Eval at {collector._frames} steps.")
-            info.update(evaluate())
+            info.update(evaluate(str(collector._frames)))
 
         if save_interval > 0 and i % save_interval == 0:
-            save_policy_checkpoint(policy, os.path.join(run.dir, f"checkpoint_{collector._frames}.pt"))
+            save_policy_checkpoint(policy, os.path.join(out, f"checkpoint_{collector._frames}.pt"))
 
         run.log(info)
         pbar.set_postfix({"rollout_fps": collector._fps, "frames": collector._frames})
@@ -158,11 +166,13 @@ def main(cfg):
 
     logging.info(f"Final Eval at {collector._frames} steps.")
     info = {"env_frames": collector._frames}
-    info.update(evaluate())
+    info.update(evaluate("final"))
     run.log(info)
 
-    save_policy_checkpoint(policy, os.path.join(run.dir, "checkpoint_final.pt"))
-    wandb.save(os.path.join(run.dir, "checkpoint_final.pt"))
+    save_policy_checkpoint(policy, os.path.join(out, "checkpoint_final.pt"))
+    if cfg.wandb.mode != "disabled":
+        wandb.save(os.path.join(out, "checkpoint_final.pt"), base_path=out)
+    print(f"[train] done: {os.path.join(out, 'checkpoint_final.pt')}")
     wandb.finish()
     simulation_app.close()
 

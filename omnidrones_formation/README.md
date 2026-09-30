@@ -201,8 +201,19 @@ python scripts/train.py checkpoint_path=runs/lite/checkpoint.pt
 python scripts/train.py task=FormationNavHummingbird viewer.eye=[-7.,-7.,5.]
 ```
 
+Everything is written to `output_dir`, by default
+`runs/FormationNav_<date>_<time>/` under the directory you launch from:
+
+```
+config.yaml                    the full config of the run
+checkpoint_<frames>.pt         every save_interval iterations (300 = ~9.8 M frames)
+checkpoint_final.pt
+eval_<frames>/, eval_final/    results.md / results.json (one column per scenario) + trajectory_<scenario>.png
+```
+
 Every `eval_interval` iterations it runs all four scenarios and logs the metric table, a
-trajectory plot and a video per scenario to wandb. The default of 512 envs × 8 drones with an
+trajectory plot and a video per scenario to wandb (videos only there, and only when wandb is
+`online` or `offline`). The default of 512 envs × 8 drones with an
 LSTM of 256 needs about 1.5 GB of GPU memory for the rollout buffer (hidden states are stored
 per step), on top of Isaac Sim; reduce `task.env.num_envs` if needed.
 

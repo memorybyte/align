@@ -9,6 +9,8 @@ eval_interval: 300        # iterations; -1 disables periodic evaluation
 save_interval: 300
 seed: 0
 checkpoint_path: null     # warm start / resume from a checkpoint (e.g. a lite-trained actor)
+# checkpoints, config and evaluation tables / plots (relative to where you launch train.py)
+output_dir: runs/${task.name}_${now:%Y-%m-%d_%H-%M-%S}
 
 # scenarios run at every evaluation (one deterministic episode per env each)
 eval_scenarios: [none, static, dynamic, mixed]
