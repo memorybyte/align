@@ -87,6 +87,7 @@ sed -i 's/self.get_world_poses(usd=usd)/self.get_world_poses()/' \
 
 alias pysim=/isaac-sim/python.sh
 cd /workspace/OmniDrones && pysim -m pip install -e .
+pysim -m pip install tensordict==0.3.2   # keep the version torchrl 0.3.1 was built for
 cd /workspace/align/omnidrones_formation && pysim -m pip install -e . pytest
 pysim -m pytest tests -q
 pysim scripts/smoke_test.py                 # first flight in Isaac Sim (headless)
@@ -120,6 +121,8 @@ python -c "from isaacsim import SimulationApp; print('ok')"
 git clone https://github.com/btx0424/OmniDrones.git && cd OmniDrones
 git checkout 9ce7c20        # optional
 pip install -e .            # do NOT copy conda_setup/etc: that hook is for the binary package
+pip install tensordict==0.3.2   # torchrl 0.3.1 does not cap tensordict; newer versions break it (MemmapTensor ImportError)
+python -c "import torch, torchrl, tensordict; print(torch.__version__, torchrl.__version__, tensordict.__version__)"   # 2.2.2+cu118 0.3.1 0.3.2
 ```
 
 The first start of Isaac Sim, by either route, compiles shaders and downloads extensions, which
@@ -192,6 +195,8 @@ python scripts/train.py task=FormationNavHummingbird viewer.eye=[-7.,-7.,5.]   #
   Container Toolkit, then run `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`.
 * **`unauthorized` when pulling from nvcr.io**: log in with the user name `$oauthtoken`, spelled
   exactly like that, and your NGC API key as the password.
+* **`ImportError: cannot import name 'MemmapTensor' from 'tensordict.memmap'`**: pip pulled a
+  tensordict that is too new for torchrl 0.3.1. Run `pip install tensordict==0.3.2`.
 * **CUDA / `no kernel image is available` errors**: the GPU is too new (Blackwell, see section 0)
   or the driver is older than 535.
 * **The lower drones of cube / sphere / pyramid formations sink**: check that
