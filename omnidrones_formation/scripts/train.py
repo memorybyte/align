@@ -164,9 +164,12 @@ def main(cfg):
                 continue
             write_video(cb.frames, os.path.join(eval_dir, f"video_{scenario}.mp4"), fps)
             if cfg.wandb.mode != "disabled":
-                info[f"eval/{scenario}/recording"] = wandb.Video(
-                    cb.get_video_array(axes="t c h w"), fps=fps, format="mp4"
-                )
+                try:  # the mp4 above is the primary copy; never let wandb media stop training
+                    info[f"eval/{scenario}/recording"] = wandb.Video(
+                        cb.get_video_array(axes="t c h w"), fps=fps, format="mp4"
+                    )
+                except Exception as e:
+                    logging.warning(f"wandb video logging failed: {e!r}")
         for scenario in results:
             png = os.path.join(eval_dir, f"trajectory_{scenario}.png")
             if os.path.exists(png) and cfg.wandb.mode != "disabled":
