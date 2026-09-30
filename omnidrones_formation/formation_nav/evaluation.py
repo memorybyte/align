@@ -130,6 +130,23 @@ def save_results(results, path_json: str, path_md: Optional[str] = None):
             f.write(format_table(results) + "\n")
 
 
+def write_video(frames, path: str, fps: float) -> str:
+    """Write RGB frames (list of HxWx3 uint8) to an mp4; falls back to a GIF without ffmpeg."""
+    import logging
+    import os
+
+    import imageio
+
+    try:
+        imageio.mimsave(path, frames, fps=fps)
+        return path
+    except Exception as e:  # no ffmpeg backend
+        gif = os.path.splitext(path)[0] + ".gif"
+        logging.warning(f"mp4 writing failed ({e}); writing {gif}")
+        imageio.mimsave(gif, frames, duration=1.0 / fps)
+        return gif
+
+
 def plot_episode(traj: TensorDictBase, env_idx: int, path: str, title: str = ""):
     """Top-down and side view of env `env_idx`'s first episode (uses the "info" entries)."""
     import matplotlib

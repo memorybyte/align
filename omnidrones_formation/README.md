@@ -208,12 +208,13 @@ Everything is written to `output_dir`, by default
 config.yaml                    the full config of the run
 checkpoint_<frames>.pt         every save_interval iterations (300 = ~9.8 M frames)
 checkpoint_final.pt
-eval_<frames>/, eval_final/    results.md / results.json (one column per scenario) + trajectory_<scenario>.png
+eval_<frames>/, eval_final/    results.md / results.json (one column per scenario),
+                               trajectory_<scenario>.png and video_<scenario>.mp4
 ```
 
-Every `eval_interval` iterations it runs all four scenarios and logs the metric table, a
-trajectory plot and a video per scenario to wandb (videos only there, and only when wandb is
-`online` or `offline`). The default of 512 envs × 8 drones with an
+Every `eval_interval` iterations it runs all four scenarios and saves the metric table, a
+trajectory plot and a video per scenario there (and to wandb unless `wandb.mode=disabled`).
+Videos are recorded headless too; the camera follows one environment's swarm. The default of 512 envs × 8 drones with an
 LSTM of 256 needs about 1.5 GB of GPU memory for the rollout buffer (hidden states are stored
 per step), on top of Isaac Sim; reduce `task.env.num_envs` if needed.
 

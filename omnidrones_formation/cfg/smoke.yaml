@@ -7,6 +7,8 @@ env: ${task.env}
 
 seed: 0
 output_dir: smoke_results
+record_video: true        # Isaac Sim only: smoke_results/<formation>/video_<scenario>.mp4 (camera follows env 0's swarm)
+video_interval: 2         # every 2nd step = real time
 formations: [cube, sphere, pyramid, plane]
 scenarios: [none, static]  # the scripted policy avoids nothing; static pillars are skirted by the planned route
 

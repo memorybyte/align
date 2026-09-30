@@ -31,17 +31,6 @@ from omni_drones import init_simulation_app  # noqa: E402
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "cfg")
 
 
-def write_video(frames, path, fps):
-    import imageio
-
-    try:
-        imageio.mimsave(path, frames, fps=fps)
-    except Exception as e:  # no ffmpeg backend: fall back to GIF
-        gif = os.path.splitext(path)[0] + ".gif"
-        logging.warning(f"mp4 writing failed ({e}); writing {gif}")
-        imageio.mimsave(gif, frames, duration=1.0 / fps)
-
-
 @hydra.main(version_base=None, config_path=CONFIG_PATH, config_name="eval")
 def main(cfg):
     OmegaConf.register_new_resolver("eval", eval)
@@ -56,7 +45,7 @@ def main(cfg):
     from omni_drones.utils.torchrl import RenderCallback
 
     import formation_nav.env  # noqa: F401  (registers FormationNav)
-    from formation_nav.evaluation import evaluate_scenarios, format_table, save_results
+    from formation_nav.evaluation import evaluate_scenarios, format_table, save_results, write_video
     from formation_nav.mappo_lstm import MAPPOLSTM
 
     ALGOS["mappo_lstm"] = MAPPOLSTM

@@ -8,6 +8,7 @@ Run it once after installing OmniDrones, and after changing the drone or control
 
     python scripts/smoke_test.py                                # Isaac Sim, Crazyflie, headless
     python scripts/smoke_test.py headless=false                 # watch it
+    python scripts/smoke_test.py record_video=false             # faster, no mp4
     python scripts/smoke_test.py lite=true                      # pure-PyTorch quadrotor model, no Isaac Sim
     python scripts/smoke_test.py task=FormationNavHummingbird
     python scripts/smoke_test.py task.controller.downwash_feedforward=false   # see the stacked drones sink
@@ -76,7 +77,7 @@ def main(cfg):
         base_env = IsaacEnv.REGISTRY[cfg.task.name](cfg, headless=cfg.headless)
         base_env.set_seed(cfg.seed)
 
-    from formation_nav.evaluation import evaluate_scenarios, format_table, save_results
+    from formation_nav.evaluation import evaluate_scenarios, format_table, save_results, write_video
     from formation_nav.scripted import SlotSeeker
 
     policy = SlotSeeker(base_env.core.cfg.max_speed, base_env.core.cfg.action_mode)
@@ -85,14 +86,30 @@ def main(cfg):
           f"{base_env.core.cfg.num_drones} drones, {base_env.max_episode_length} steps")
 
     os.makedirs(cfg.output_dir, exist_ok=True)
+    record = bool(cfg.get("record_video", True)) and not cfg.lite  # the lite model has no renderer
+    if record:
+        base_env.enable_render(True)
     all_results = {}
     for formation in cfg.formations:
         plot_dir = os.path.join(cfg.output_dir, formation)
         os.makedirs(plot_dir, exist_ok=True)
+        callbacks = {}
+
+        def record_scenario(scenario):
+            from omni_drones.utils.torchrl import RenderCallback
+
+            callbacks[scenario] = RenderCallback(interval=cfg.video_interval)
+            return callbacks[scenario]
+
         results = evaluate_scenarios(
             base_env, base_env, policy, base_env.max_episode_length,
             scenarios=cfg.scenarios, formation=formation, plot_dir=plot_dir,
+            callback_factory=record_scenario if record else None,
         )
+        for scenario, cb in callbacks.items():
+            if cb.frames:
+                fps = 1.0 / (cfg.sim.dt * cfg.sim.substeps * cfg.video_interval)
+                print("[smoke test] video:", write_video(cb.frames, os.path.join(plot_dir, f"video_{scenario}.mp4"), fps))
         print(f"\n### formation: {formation}\n" + format_table(results, KEYS))
         save_results(results, os.path.join(plot_dir, "results.json"), os.path.join(plot_dir, "results.md"))
         all_results[formation] = results

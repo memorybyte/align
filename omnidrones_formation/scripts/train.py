@@ -58,7 +58,7 @@ def main(cfg):
     from omni_drones.utils.wandb import init_wandb
 
     import formation_nav.env  # noqa: F401  (registers FormationNav)
-    from formation_nav.evaluation import evaluate_scenarios, format_table, save_results
+    from formation_nav.evaluation import evaluate_scenarios, format_table, save_results, write_video
     from formation_nav.mappo_lstm import MAPPOLSTM
 
     ALGOS["mappo_lstm"] = MAPPOLSTM
@@ -122,10 +122,15 @@ def main(cfg):
         print(format_table(results))
         save_results(results, os.path.join(eval_dir, "results.json"), os.path.join(eval_dir, "results.md"))
         info = {f"eval/{s}/{k}": v for s, r in results.items() for k, v in r.items()}
+        fps = 0.5 / (cfg.sim.dt * cfg.sim.substeps)  # every 2nd step -> real time
         for scenario, cb in callbacks.items():
-            info[f"eval/{scenario}/recording"] = wandb.Video(
-                cb.get_video_array(axes="t c h w"), fps=0.5 / (cfg.sim.dt * cfg.sim.substeps), format="mp4"
-            )
+            if not cb.frames:
+                continue
+            write_video(cb.frames, os.path.join(eval_dir, f"video_{scenario}.mp4"), fps)
+            if cfg.wandb.mode != "disabled":
+                info[f"eval/{scenario}/recording"] = wandb.Video(
+                    cb.get_video_array(axes="t c h w"), fps=fps, format="mp4"
+                )
         for scenario in results:
             png = os.path.join(eval_dir, f"trajectory_{scenario}.png")
             if os.path.exists(png):
