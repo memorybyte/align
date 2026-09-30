@@ -123,6 +123,13 @@ git checkout 9ce7c20        # optional
 pip install -e .            # do NOT copy conda_setup/etc: that hook is for the binary package
 pip install tensordict==0.3.2   # torchrl 0.3.1 does not cap tensordict; newer versions break it (MemmapTensor ImportError)
 python -c "import torch, torchrl, tensordict; print(torch.__version__, torchrl.__version__, tensordict.__version__)"   # 2.2.2+cu118 0.3.1 0.3.2
+
+# Isaac Sim bundles an old botocore. A newer boto3 / s3transfer in the env breaks omni.replicator.core
+# (needed for rendering and videos): "cannot import name 'DEFAULT_CHECKSUM_ALGORITHM'".
+# Install the boto3 that matches the bundled botocore:
+PB="$SITE/extscache/omni.kit.pip_archive/pip_prebundle"
+BV=$(ls -d "$PB"/botocore-*.dist-info | sed -E 's/.*botocore-([0-9.]+)\.dist-info/\1/'); echo "bundled botocore $BV"
+pip install "boto3==$BV" "botocore==$BV"
 ```
 
 The first start of Isaac Sim, by either route, compiles shaders and downloads extensions, which
@@ -136,9 +143,26 @@ can take 5–10 minutes. Later starts are much faster.
 torchrl 0.3.1, which is built for PyTorch 2.2. Using them would mean upgrading torchrl and
 tensordict and fixing OmniDrones (untested).
 
-**Isaac Lab is not needed.** OmniDrones' guide installs it, but only its `Forest` and `Pinball`
-tasks use it; OmniDrones prints a notice and continues without it. FormationNav senses obstacles
-analytically.
+### Required for both routes: let OmniDrones import without Isaac Lab
+
+Only OmniDrones' `Forest` and `Pinball` tasks use Isaac Lab. FormationNav senses obstacles
+analytically. But at commit `9ce7c20`, `omni_drones/envs/single/__init__.py` imports both tasks
+unconditionally, so importing OmniDrones fails with `No module named 'omni.isaac.lab'`. Make
+those two imports optional instead of installing Isaac Lab:
+
+```bash
+cd OmniDrones      # /workspace/OmniDrones in the container
+python - <<'PY'
+p = "omni_drones/envs/single/__init__.py"
+s = open(p).read()
+old = "from .forest import Forest\nfrom .pinball import Pinball\n"
+new = "try:  # these two tasks need Isaac Lab\n    from .forest import Forest\n    from .pinball import Pinball\nexcept ModuleNotFoundError:\n    Forest = Pinball = None\n"
+if old in s:
+    open(p, "w").write(s.replace(old, new)); print("patched")
+else:
+    print("already patched or different version")
+PY
+```
 
 ## 3. Check OmniDrones on its own
 
@@ -197,6 +221,13 @@ python scripts/train.py task=FormationNavHummingbird viewer.eye=[-7.,-7.,5.]   #
   exactly like that, and your NGC API key as the password.
 * **`ImportError: cannot import name 'MemmapTensor' from 'tensordict.memmap'`**: pip pulled a
   tensordict that is too new for torchrl 0.3.1. Run `pip install tensordict==0.3.2`.
+* **`No module named 'omni.isaac.lab'`** (from `omni_drones/envs/single/pinball.py`): apply the
+  OmniDrones patch in section 2 ("Required for both routes").
+* **`cannot import name 'DEFAULT_CHECKSUM_ALGORITHM' from 'botocore.httpchecksum'`**, followed by
+  `omni.replicator.core ... failed to load`: the boto3 / botocore versions clash (route B, last
+  lines). Without the replicator there is no rendering, so no videos.
+* **`GLFW initialization failed`, `failed to open the default display`**: normal on a machine
+  without a display (headless). Use `headless=true`, or run under a desktop session for `headless=false`.
 * **CUDA / `no kernel image is available` errors**: the GPU is too new (Blackwell, see section 0)
   or the driver is older than 535.
 * **The lower drones of cube / sphere / pyramid formations sink**: check that

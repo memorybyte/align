@@ -155,7 +155,8 @@ Step by step, with troubleshooting: [docs/INSTALL.md](docs/INSTALL.md). In short
 2. Get Isaac Sim 4.1.0. It is no longer on NVIDIA's download page; use the NGC container
    `nvcr.io/nvidia/isaac-sim:4.1.0` (recommended) or the pip wheels `isaacsim==4.1.0.0`.
 3. `pip install -e .` in OmniDrones (`main`, developed against commit `9ce7c20`) with Isaac Sim's
-   Python. Isaac Lab is **not** needed.
+   Python. Isaac Lab is **not** needed, but OmniDrones needs a two-line patch to import without it
+   (docs/INSTALL.md, section 2).
 4. `cd omnidrones_formation && pip install -e .`
 5. Run `python scripts/smoke_test.py` (first-flight check, below).
 
