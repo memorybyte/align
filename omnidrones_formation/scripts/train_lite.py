@@ -8,6 +8,7 @@ Isaac Sim training (`algo.checkpoint_path=...`).
 
 Example:
     python scripts/train_lite.py --num_envs 128 --iters 300 --scenario train_mix --out runs/lite
+    python scripts/train_lite.py --dynamics quadrotor --drone crazyflie ...   # rigid-body Crazyflie + downwash
 """
 
 import argparse
@@ -53,6 +54,10 @@ def parse():
     p.add_argument("--train_every", type=int, default=64)
     p.add_argument("--hidden_size", type=int, default=256)
     p.add_argument("--input_norm", default="running", choices=["running", "layernorm"])
+    p.add_argument("--dynamics", default="pointmass", choices=["pointmass", "quadrotor"],
+                   help="quadrotor: rigid-body model + Lee controller + OmniDrones' downwash (slower)")
+    p.add_argument("--drone", default="crazyflie", choices=["crazyflie", "hummingbird"],
+                   help="drone of the quadrotor dynamics")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--out", default="runs/lite")
@@ -73,7 +78,8 @@ def main():
         goal_distance=(args.goal_min, args.goal_max),
         **task_overrides(args.set),
     )
-    base = FormationNavLite(task, args.num_envs, args.max_episode_length, device=args.device, seed=args.seed)
+    base = FormationNavLite(task, args.num_envs, args.max_episode_length, device=args.device, seed=args.seed,
+                            dynamics=args.dynamics, drone=args.drone)
     env = TransformedEnv(base, InitTracker())
     algo = dict(train_every=args.train_every, hidden_size=args.hidden_size, lr_decay_iters=args.iters,
                 input_norm=args.input_norm)
@@ -121,7 +127,8 @@ def main():
     torch.save(policy.checkpoint(), os.path.join(args.out, "checkpoint.pt"))
 
     # evaluate the final policy with and without obstacles
-    eval_base = FormationNavLite(task, args.eval_envs, args.max_episode_length, device=args.device, seed=1234)
+    eval_base = FormationNavLite(task, args.eval_envs, args.max_episode_length, device=args.device, seed=1234,
+                                 dynamics=args.dynamics, drone=args.drone)
     eval_env = TransformedEnv(eval_base, InitTracker())
     results = evaluate_scenarios(eval_env, eval_base, policy, args.max_episode_length, plot_dir=args.out)
     save_results(results, os.path.join(args.out, "eval.json"), os.path.join(args.out, "eval.md"))

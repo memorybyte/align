@@ -1,5 +1,6 @@
 runs/
 eval_results/
+smoke_results/
 outputs/
 wandb/
 __pycache__/

@@ -8,13 +8,14 @@ Both the Isaac Sim environment (`env.py`) and the point-mass surrogate
 Episode structure (per parallel environment)
 -------------------------------------------
 1. FORM   The drones start on the ground in a planar grid. Each drone is assigned a slot of
-          the requested formation hovering above the start area and must take off and
-          build the formation.
+          the requested formation hovering above the start area (paths that do not cross)
+          and must take off and build the formation. With `staged_takeoff` the slots rise
+          as a block, top layer first, so nobody climbs into the downwash of a climbing drone.
 2. NAV    Once every drone has been within `form_tolerance` of its slot for `form_steps`
-          steps, the formation's reference point moves toward the goal along a straight
-          line through waypoints spaced `waypoint_spacing` apart (receding-horizon waypoints,
-          paper Sec. IV-E). The drones track their slots and avoid obstacles by locally
-          deforming the formation.
+          steps, the formation's reference point moves toward the goal through waypoints
+          spaced `waypoint_spacing` apart (receding-horizon waypoints, paper Sec. IV-E), on a
+          straight line or a route planned around the pillars. The drones track their slots
+          and avoid obstacles by locally deforming the formation.
 3. HOLD   When the last waypoint (the goal) is active and the swarm centroid is within
           `hold_enter_dist` of it, the drones must hold the formation at the goal until the
           episode ends.
@@ -79,10 +80,10 @@ class FormationNavConfig:
     formation: str = "dynamic"  # a name from FORMATIONS, "dynamic" (sample from pool) or "custom"
     formation_pool: Tuple[str, ...] = ("cube", "sphere", "pyramid", "plane")
     custom_formation: Optional[Tuple[Tuple[float, float, float], ...]] = None  # metres
-    formation_spacing: float = 1.2  # minimum distance between formation slots (m)
+    formation_spacing: float = 1.0  # minimum distance between formation slots (m)
     formation_altitude: float = 1.5  # altitude of the lowest formation slot (m)
-    ground_spacing: float = 1.2  # spacing of the take-off grid (m)
-    spawn_height: float = 0.1  # z of the drones at spawn (resting on the ground)
+    ground_spacing: float = 1.0  # spacing of the take-off grid (m)
+    spawn_height: float = 0.05  # z of the drones at spawn, just above the ground
     goal_distance: Tuple[float, float] = (8.0, 14.0)  # horizontal start-goal distance (m)
     random_heading: bool = True  # random direction of travel per episode
 
@@ -102,6 +103,14 @@ class FormationNavConfig:
     planner_bins: int = 25  # lateral candidates per station (odd, so 0 is one of them)
     planner_margin: float = 0.4  # extra clearance around the inflated pillars (m)
     planner_max_slope: float = 1.0  # max lateral change per metre along the route
+
+    # staged take-off (FORM phase): the formation rises as a block at `takeoff_speed`, the top
+    # layer lifts off first and every lower layer joins when the block has risen past it, so no
+    # drone climbs beneath a drone that is still climbing. The downwash then never exceeds its
+    # hover value; OmniDrones' downwash model otherwise pins a Crazyflie that climbs under another
+    # one to the ground even at full thrust. False: every drone flies to its slot from t = 0.
+    staged_takeoff: bool = True
+    takeoff_speed: float = 1.0  # m/s
 
     # phases
     form_tolerance: float = 0.35
@@ -141,11 +150,12 @@ class FormationNavConfig:
     curriculum_up: float = 0.5
     curriculum_down: float = 0.2
 
-    # safety / termination
-    drone_radius: float = 0.25
-    collision_dist: float = 0.35  # drone-drone centre distance counted as a collision
-    safe_dist: float = 0.7  # separation below which the avoidance penalty starts
-    obstacle_safe_dist: float = 0.6  # obstacle clearance below which the penalty starts
+    # safety / termination. Defaults are sized for the Crazyflie (0.027 kg, ~0.13 m across
+    # the propellers); cfg/task/FormationNavHummingbird.yaml has the values for the Hummingbird.
+    drone_radius: float = 0.07  # obstacle hit when the clearance to its surface is below this
+    collision_dist: float = 0.15  # drone-drone centre distance counted as a collision
+    safe_dist: float = 0.4  # separation below which the avoidance penalty starts
+    obstacle_safe_dist: float = 0.4  # obstacle clearance below which the penalty starts
     # formation relaxation: within this clearance of an obstacle the slot-tracking rewards
     # (progress, proximity, reaching) are scaled down linearly, so leaving the slot to go
     # around an obstacle is not punished (0 disables)
@@ -154,7 +164,7 @@ class FormationNavConfig:
     takeoff_grace: int = 150  # steps during which being near the ground is not a crash
     max_tilt: float = 1.2  # rad
     out_of_bounds: float = 8.0  # max lateral distance from the path (m)
-    max_altitude: float = 5.0
+    max_altitude: float = 5.0  # raised per episode to the top slot + 1 m for tall formations
     terminate_on_collision: bool = True
 
     # actions
@@ -335,6 +345,32 @@ def greedy_assignment(cost: torch.Tensor) -> torch.Tensor:
     return perm
 
 
+def uncross_assignment(cost: torch.Tensor, perm: torch.Tensor, max_iters: Optional[int] = None) -> torch.Tensor:
+    """
+    Pairwise-swap refinement of an assignment: repeatedly swap the slots of the two drones
+    whose swap lowers the total cost most, until no swap helps. With Euclidean distances as
+    cost the result has no crossing paths (uncrossing two segments always shortens them).
+
+    cost: (B, n, n) [drone, slot]; perm: (B, n) slot of each drone. Returns the refined perm.
+    """
+    B, n, _ = cost.shape
+    perm = perm.clone()
+    rows = torch.arange(B, device=cost.device)
+    for _ in range(max_iters or 4 * n * n):
+        own = cost.gather(2, perm.unsqueeze(-1)).squeeze(-1)  # c[i, p_i]
+        cross = cost.gather(2, perm.unsqueeze(1).expand(B, n, n))  # [b, i, j] = c[i, p_j]
+        gain = own.unsqueeze(2) + own.unsqueeze(1) - cross - cross.transpose(1, 2)
+        best = gain.reshape(B, -1).max(dim=1)
+        swap = best.values > 1e-6
+        if not swap.any():
+            break
+        i, j = best.indices // n, best.indices % n
+        pi, pj = perm[rows, i], perm[rows, j]
+        perm[rows, i] = torch.where(swap, pj, pi)
+        perm[rows, j] = torch.where(swap, pi, pj)
+    return perm
+
+
 def procrustes_error(pos: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """
     Mean squared distance between `pos` and `target` after the optimal rigid alignment
@@ -448,6 +484,10 @@ class FormationNavCore:
         self.phase_steps = torch.zeros(E, dtype=torch.long, device=self.device)
         self.prev_dist = torch.zeros(E, n, **f32)
         self.prev_action = torch.zeros(E, n, cfg.action_dim, **f32)
+        self.spawn = torch.zeros(E, n, 3, **f32)  # take-off positions
+        self.takeoff_delay = torch.zeros(E, n, **f32)  # steps before a drone's staged lift-off
+        self.form_ready = torch.zeros(E, **f32)  # steps until the staged formation is complete
+        self.alt_limit = torch.full((E,), cfg.max_altitude, **f32)  # out-of-bounds altitude
 
         # obstacles
         self.obs_active = torch.zeros(E, self.M, dtype=torch.bool, device=self.device)
@@ -592,10 +632,10 @@ class FormationNavCore:
         start = start + torch.cat([self._uniform(-0.05, 0.05, B, n, 2), torch.zeros(B, n, 1, device=self.device)], -1)
         start[..., 2] = cfg.spawn_height
 
-        # assign drones to slots (shortest take-off paths, avoids crossing)
+        # assign drones to slots: short take-off paths that do not cross (seen from above)
         slots_abs = assembly.unsqueeze(1) + template
-        cost = torch.cdist(start[..., :2], slots_abs[..., :2]).square()
-        perm = greedy_assignment(cost)
+        cost = torch.cdist(start[..., :2], slots_abs[..., :2])
+        perm = uncross_assignment(cost, greedy_assignment(cost))
         offset = torch.gather(template, 1, perm.unsqueeze(-1).expand(B, n, 3))
 
         self.heading[env_ids] = heading
@@ -606,6 +646,18 @@ class FormationNavCore:
         self.formation_id[env_ids] = fid
         self.slot_offset[env_ids] = offset
         self.form_scale[env_ids] = max_pairwise_sq(offset).clamp_min(1e-6)
+
+        self.spawn[env_ids] = start
+        top_slot = assembly[:, 2] + offset[..., 2].max(dim=1).values
+        self.alt_limit[env_ids] = torch.clamp_min(top_slot + 1.0, cfg.max_altitude)
+        if cfg.staged_takeoff:
+            final_z = assembly[:, 2:3] + offset[..., 2]  # (B, n)
+            top = final_z.max(dim=1, keepdim=True).values
+            self.takeoff_delay[env_ids] = (top - final_z + cfg.spawn_height) / cfg.takeoff_speed / cfg.dt
+            self.form_ready[env_ids] = top.squeeze(-1) / cfg.takeoff_speed / cfg.dt
+        else:
+            self.takeoff_delay[env_ids] = 0.0
+            self.form_ready[env_ids] = 0.0
 
         self.phase[env_ids] = PHASE_FORM
         self.s_ref[env_ids] = 0.0
@@ -618,8 +670,7 @@ class FormationNavCore:
         self._update_obstacle_kinematics(env_ids)
         self._plan_route(env_ids, assembly, direction, path_len, template)
 
-        slot = self.reference(env_ids).unsqueeze(1) + offset
-        self.prev_dist[env_ids] = (slot - start).norm(dim=-1)
+        self.prev_dist[env_ids] = (self.slots()[env_ids] - start).norm(dim=-1)
 
         for v in self.stats.values():
             v[env_ids] = 0.0
@@ -831,8 +882,32 @@ class FormationNavCore:
         self.path_cum[env_ids] = cum
         self.path_len[env_ids] = cum[:, -1]
 
-    def slots(self) -> torch.Tensor:
+    def formation_slots(self) -> torch.Tensor:
+        """Slots of the formation at the current reference point (E, n, 3), ignoring staging."""
         return self.reference().unsqueeze(1) + self.slot_offset
+
+    def slots(self) -> torch.Tensor:
+        """Current slot of every drone (E, n, 3); during a staged take-off the rising one."""
+        final = self.formation_slots()
+        if not self.cfg.staged_takeoff:
+            return final
+        forming = (self.phase == PHASE_FORM).view(-1, 1, 1)
+        return torch.where(forming, self._staged_slots(final), final)
+
+    def _staged_slots(self, final: torch.Tensor) -> torch.Tensor:
+        """
+        Staged take-off reference: the formation, lowered by `lift`, rises at takeoff_speed;
+        slots still below their drone's take-off height stay there. Each drone moves along the
+        straight line from its take-off position to its slot as its altitude comes up.
+        """
+        t = self.steps.float().unsqueeze(-1) * self.cfg.dt  # (E, 1)
+        top = final[..., 2].max(dim=1, keepdim=True).values
+        lift = (top - self.cfg.takeoff_speed * t).clamp_min(0.0)
+        z0 = self.spawn[..., 2]
+        z = torch.maximum(final[..., 2] - lift, z0)
+        frac = ((z - z0) / (final[..., 2] - z0).clamp_min(1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
+        xy = self.spawn[..., :2] + frac * (final[..., :2] - self.spawn[..., :2])
+        return torch.cat([xy, z.unsqueeze(-1)], dim=-1)
 
     def action_to_velocity(self, actions: torch.Tensor) -> torch.Tensor:
         """Map policy actions (E, n, A) to velocity commands (E, n, 3)."""
@@ -932,13 +1007,17 @@ class FormationNavCore:
         )
 
         # --- termination ---------------------------------------------------------------------
-        low = (pos[..., 2] < cfg.crash_height) & (self.steps > cfg.takeoff_grace).unsqueeze(-1)
+        # on the ground after the take-off grace period (counted from the drone's staged lift-off)
+        low = (pos[..., 2] < cfg.crash_height) & (self.steps.unsqueeze(-1) > cfg.takeoff_grace + self.takeoff_delay)
         flipped = tilt > cfg.max_tilt
         rel = pos - self.assembly.unsqueeze(1)
         along = (rel * self.direction.unsqueeze(1)).sum(-1)
         lateral = (rel - self.direction.unsqueeze(1) * along.unsqueeze(-1))[..., :2].norm(dim=-1)
-        oob = (lateral > cfg.out_of_bounds) | (pos[..., 2] > cfg.max_altitude) | (along < -cfg.out_of_bounds) | (
-            along > self.straight_len.unsqueeze(-1) + cfg.out_of_bounds
+        oob = (
+            (lateral > cfg.out_of_bounds)
+            | (pos[..., 2] > self.alt_limit.unsqueeze(-1))
+            | (along < -cfg.out_of_bounds)
+            | (along > self.straight_len.unsqueeze(-1) + cfg.out_of_bounds)
         )
         crash = low | flipped | oob | nan
         if cfg.terminate_on_collision:
@@ -995,7 +1074,7 @@ class FormationNavCore:
 
         # FORM -> NAV
         forming = self.phase == PHASE_FORM
-        in_form = (dist < cfg.form_tolerance).all(-1)
+        in_form = (dist < cfg.form_tolerance).all(-1) & (self.steps.float() >= self.form_ready)
         self.form_counter = torch.where(forming & in_form, self.form_counter + 1, torch.zeros_like(self.form_counter))
         to_nav = forming & ((self.form_counter >= cfg.form_steps) | (self.phase_steps >= cfg.form_timeout))
         self.stats["time_to_form"] = torch.where(
@@ -1047,7 +1126,7 @@ class FormationNavCore:
         pos = torch.nan_to_num(pos)
         vel = torch.nan_to_num(vel)
         ref = self.reference()
-        slot = ref.unsqueeze(1) + self.slot_offset
+        slot = self.slots()
         to_slot = slot - pos
         norm = to_slot.norm(dim=-1, keepdim=True)
         to_slot = to_slot * (cfg.target_obs_clip / norm.clamp_min(cfg.target_obs_clip))

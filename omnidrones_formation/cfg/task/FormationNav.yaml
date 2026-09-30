@@ -15,18 +15,27 @@ sim:
   substeps: 2              # policy at 31.25 Hz, velocity controller at 62.5 Hz
 
 drone_model:
-  name: Hummingbird
-  controller: LeePositionController
+  name: Crazyflie                  # OmniDrones drone class; see FormationNavHummingbird.yaml for the Hummingbird
+
+# low-level velocity controller (formation_nav/controller.py): OmniDrones' Lee controller maths
+controller:
+  gains: null                      # null: formation_nav.controller.LEE_GAINS[<drone>], or {position_gain: [..], velocity_gain: [..], attitude_gain: [..], angular_rate_gain: [..]}
+  mass: null                       # null: total mass of the simulated drone (all rigid bodies)
+  downwash_feedforward: true       # cancel the downwash force OmniDrones applies (needed to hold stacked formations)
+  integral_gain: [0.0, 0.0, 0.0]   # velocity-error integral per axis (1/s^2), e.g. [0, 0, 1] with mass randomisation
+  integral_limit: [0.0, 0.0, 0.0]  # anti-windup clamp (m/s^2)
+  integral_min_altitude: 0.15      # no integration below this height (resting on the ground)
+downwash_scale: 1.0                # OmniDrones' inter-drone downwash model (1 = as shipped, 0 = off)
 
 # ---------------- swarm and formation ----------------
 num_drones: 8
 formation: dynamic                 # plane|cube|sphere|pyramid|line|column|v|circle|dynamic|custom
 formation_pool: [cube, sphere, pyramid, plane]   # sampled per episode when formation=dynamic
 custom_formation: null             # formation=custom: list of num_drones [x, y, z] offsets (m), +x = travel direction
-formation_spacing: 1.2             # min distance between slots (m)
+formation_spacing: 1.0             # min distance between slots (m)
 formation_altitude: 1.5            # altitude of the lowest slot (m)
-ground_spacing: 1.2                # take-off grid spacing (m)
-spawn_height: 0.1
+ground_spacing: 1.0                # take-off grid spacing (m)
+spawn_height: 0.05                 # just above the ground
 goal_distance: [8.0, 14.0]         # start -> goal distance (m)
 random_heading: true
 
@@ -43,6 +52,10 @@ planner_lateral: 6.0
 planner_bins: 25
 planner_margin: 0.4
 planner_max_slope: 1.0
+
+# ---------------- staged take-off ----------------
+staged_takeoff: true               # formation rises as a block, top layer first (no climbing under a climbing drone)
+takeoff_speed: 1.0                 # m/s
 
 # ---------------- phases ----------------
 form_tolerance: 0.35
@@ -79,17 +92,17 @@ curriculum_window: 64
 curriculum_up: 0.5
 curriculum_down: 0.2
 
-# ---------------- safety / termination ----------------
-drone_radius: 0.25
-collision_dist: 0.35
-safe_dist: 0.7
-obstacle_safe_dist: 0.6
+# ---------------- safety / termination (sized for the Crazyflie) ----------------
+drone_radius: 0.07                 # obstacle hit when the clearance to its surface is below this
+collision_dist: 0.15               # drone-drone centre distance counted as a collision
+safe_dist: 0.4                     # separation below which the avoidance penalty starts
+obstacle_safe_dist: 0.4            # obstacle clearance below which the penalty starts
 relax_dist: 0.0                    # >0: scale slot-tracking rewards down within this clearance of obstacles
 crash_height: 0.2
 takeoff_grace: 150
 max_tilt: 1.2
 out_of_bounds: 8.0
-max_altitude: 5.0
+max_altitude: 5.0                  # raised per episode to the top slot + 1 m for tall formations
 terminate_on_collision: true
 
 # ---------------- actions ----------------

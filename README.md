@@ -27,11 +27,28 @@ This repository contains:
 3. **Cube / sphere / pyramid targets were flattened onto the ground** (bottom layer clamped to
    z = 0.05 m). Evaluation and rendering could not run.
 
+## OmniDrones task: Crazyflie, downwash and installation
+
+* **Drone:** the task now flies OmniDrones' **Crazyflie** (the paper's hardware target) by
+  default. OmniDrones has no controller for it, so the task brings the same Lee controller
+  maths (tested to match OmniDrones' own) with Crazyflie gains and the simulated mass. The
+  Hummingbird remains available as `task=FormationNavHummingbird`.
+* **Downwash fix:** OmniDrones pushes every drone down with the downwash of the drones above
+  it (59 % of a drone's weight at 1 m). The first version of the task did not compensate this,
+  so cube / sphere / pyramid formations could not hold: the lower layer sank to the ground in
+  every test episode. The controller now cancels the force (feed-forward), the take-off is
+  staged top layer first, and slot paths do not cross. A scripted policy then forms all eight
+  formation types with 8 Crazyflies, without crashes.
+  [Details](omnidrones_formation/README.md#drone-model-and-low-level-control)
+* **Install:** [omnidrones_formation/docs/INSTALL.md](omnidrones_formation/docs/INSTALL.md).
+  Isaac Sim 4.1, which OmniDrones needs, **does not run on Blackwell GPUs** such as the RTX PRO
+  4000 Blackwell listed in the paper; the guide lists the options.
+
 ## OmniDrones task: what the CPU experiments showed
 
 Measured with the point-mass version of the same task
-([details](omnidrones_formation/docs/POINTMASS_RESULTS.md)); the Isaac Sim version has not
-been run yet because there was no GPU here.
+([details](omnidrones_formation/docs/POINTMASS_RESULTS.md)), before the Crazyflie switch; the
+Isaac Sim version has not been run yet because there was no GPU here.
 
 * **Without obstacles:** 88–97 % of episodes take off, build the 3-D formation, fly 8–12 m and
   hold at the goal.
@@ -48,11 +65,14 @@ been run yet because there was no GPU here.
 # fixed PyBullet code (unchanged training command, see my-mappo/README.md)
 cd my-mappo && pip install -r requirements.txt && PYTHONPATH=. pytest tests -q
 
-# OmniDrones task (needs Isaac Sim 4.1 + OmniDrones, see omnidrones_formation/README.md)
+# OmniDrones task (needs Isaac Sim 4.1 + OmniDrones, see omnidrones_formation/docs/INSTALL.md)
 cd omnidrones_formation && pip install -e .
+python scripts/smoke_test.py                                   # first flight: take-off, form, fly, hold (scripted)
 python scripts/train.py                                        # obstacles: random per episode
 python scripts/evaluate.py checkpoint_path=...                 # none vs static vs dynamic vs mixed
 
-# same task without Isaac Sim (point-mass drones, CPU)
+# same task without Isaac Sim (CPU): point-mass or rigid-body Crazyflie dynamics
+python scripts/smoke_test.py lite=true
 python scripts/train_lite.py --out runs/lite && python scripts/eval_lite.py --checkpoint runs/lite/checkpoint.pt
+python scripts/train_lite.py --dynamics quadrotor --out runs/lite_cf
 ```

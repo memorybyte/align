@@ -5,6 +5,16 @@ Isaac Sim environment, but with point-mass drones (first-order velocity tracking
 **not Isaac Sim results**. They check that the task is learnable and show which design choices
 matter before spending GPU time. They are also where the default settings came from.
 
+> **These runs predate the switch to the Crazyflie defaults.** They used:
+> * the Hummingbird sizes: formation and take-off spacing 1.2 m, drone radius 0.25 m,
+>   collision distance 0.35 m, avoidance penalty from 0.7 m, obstacle penalty from 0.6 m;
+> * a simultaneous take-off (no staging);
+> * the plain greedy slot assignment.
+>
+> The point-mass dynamics do not depend on the drone. For a comparable setup today, add
+> `--set formation_spacing=1.2 ground_spacing=1.2 drone_radius=0.25 collision_dist=0.35 safe_dist=0.7 obstacle_safe_dist=0.6 spawn_height=0.1 staged_takeoff=False`.
+> The assignment is now always crossing-free.
+
 **Setup (runs A–E).**
 
 * 4 drones; the formation is sampled per episode from cube / sphere / pyramid / plane.

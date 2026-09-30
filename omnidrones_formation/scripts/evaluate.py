@@ -4,7 +4,10 @@ Evaluate a trained FormationNav policy in Isaac Sim, with and without obstacles.
     python scripts/evaluate.py checkpoint_path=/path/checkpoint_final.pt
     python scripts/evaluate.py checkpoint_path=... headless=false eval_scenarios=[none]      # watch it
     python scripts/evaluate.py checkpoint_path=... eval_formations=[cube,sphere,pyramid,plane]
-    python scripts/evaluate.py checkpoint_path=... task.num_drones=16    # scale-up (same policy)
+    python scripts/evaluate.py checkpoint_path=... task.num_drones=16 task.downwash_scale=0.5   # scale-up (same policy)
+
+16 Crazyflies in cube / pyramid / sphere need more thrust than they have under OmniDrones' full
+downwash (README, "Drone model"); halve it or use planar formations for the scale-up.
 
 For every (formation, scenario) pair it writes to `output_dir`:
     results_<formation>.json / .md   mean ± std of success, hold ratio, formation error,

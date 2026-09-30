@@ -1,0 +1,17 @@
+# FormationNav with OmniDrones' Hummingbird (0.72 kg, 0.34 m wide) instead of the Crazyflie:
+#   python scripts/train.py task=FormationNavHummingbird viewer.eye=[-7.,-7.,5.]
+# Everything not listed here is taken from FormationNav.yaml.
+defaults:
+  - FormationNav
+  - _self_
+
+drone_model:
+  name: Hummingbird
+
+formation_spacing: 1.2
+ground_spacing: 1.2
+spawn_height: 0.1
+drone_radius: 0.25
+collision_dist: 0.35
+safe_dist: 0.7
+obstacle_safe_dist: 0.6

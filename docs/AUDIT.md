@@ -125,6 +125,14 @@ these two bugs.
   waypoints, communication-aware selection, obstacles, and on-the-fly shape change. The
   OmniDrones environment in `omnidrones_formation/` implements take-off → formation → waypoint
   navigation → hold, with static/dynamic obstacles and a staged formation reward.
+* **If OmniDrones results for 3-D formations are reported, say how downwash was handled.**
+  OmniDrones applies a downwash model to every multi-drone environment. The model does not
+  scale with drone size: 1 m below a hovering drone the push is 59 % of that drone's weight.
+  Without compensation, the lower layer of a cube / sphere / pyramid cannot hold its slots,
+  for the Crazyflie as for the Hummingbird. FormationNav cancels the force with a feed-forward
+  and stages the take-off (see `omnidrones_formation/README.md`, "Drone model").
+* Use the Crazyflie, the paper's deployment target (Table IV), in simulation too. This is now
+  the default drone of the OmniDrones task.
 * Add an evaluation script that produces Tables I–III (fixed seeds, N runs, mean ± std).
 * Remove absolute position from the observation, or justify it; it conflicts with the
   long-distance / waypoint claim.

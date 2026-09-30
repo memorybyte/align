@@ -16,7 +16,7 @@ eval_record_video: true
 
 viewer:
   resolution: [960, 720]
-  eye: [-7., -7., 5.]
+  eye: [-4., -4., 3.]         # relative to the swarm centroid; [-7., -7., 5.] suits the Hummingbird
   lookat: [0., 0., 1.]
 
 wandb:

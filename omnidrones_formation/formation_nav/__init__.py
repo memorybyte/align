@@ -18,7 +18,9 @@ from .core import (
     formation_template,
     procrustes_error,
 )
+from .controller import LEE_GAINS, LeeVelocityController
 from .mappo_lstm import MAPPOLSTM, MAPPOLSTMConfig
+from .quadrotor import OMNIDRONES_ASSETS, QuadrotorModel
 
 __all__ = [
     "FORMATIONS",
@@ -33,4 +35,8 @@ __all__ = [
     "procrustes_error",
     "MAPPOLSTM",
     "MAPPOLSTMConfig",
+    "LEE_GAINS",
+    "LeeVelocityController",
+    "OMNIDRONES_ASSETS",
+    "QuadrotorModel",
 ]

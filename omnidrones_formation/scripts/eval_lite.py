@@ -1,5 +1,6 @@
 """
-Evaluate a checkpoint on the point-mass FormationNav for every obstacle scenario.
+Evaluate a checkpoint on the lite FormationNav (point mass, or --dynamics quadrotor) for every
+obstacle scenario.
 
     python scripts/eval_lite.py --checkpoint runs/lite/checkpoint.pt --num_drones 8
     python scripts/eval_lite.py --checkpoint runs/lite/checkpoint.pt --num_drones 16   # scale-up
@@ -36,6 +37,10 @@ def main():
     p.add_argument("--goal_max", type=float, default=14.0)
     p.add_argument("--hidden_size", type=int, default=256)
     p.add_argument("--input_norm", default="running", choices=["running", "layernorm"])
+    p.add_argument("--dynamics", default="pointmass", choices=["pointmass", "quadrotor"],
+                   help="quadrotor: rigid-body model + Lee controller + OmniDrones' downwash (slower)")
+    p.add_argument("--drone", default="crazyflie", choices=["crazyflie", "hummingbird"],
+                   help="drone of the quadrotor dynamics")
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--out", default="runs/lite_eval")
     p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="override FormationNavConfig fields")
@@ -48,7 +53,8 @@ def main():
         goal_distance=(args.goal_min, args.goal_max),
         **task_overrides(args.set),
     )
-    base = FormationNavLite(task, args.num_envs, args.max_episode_length, seed=args.seed)
+    base = FormationNavLite(task, args.num_envs, args.max_episode_length, seed=args.seed,
+                            dynamics=args.dynamics, drone=args.drone)
     env = TransformedEnv(base, InitTracker())
     policy = MAPPOLSTM(dict(hidden_size=args.hidden_size, input_norm=args.input_norm), env.observation_spec, env.action_spec, env.reward_spec)
     ckpt = torch.load(args.checkpoint, map_location="cpu")

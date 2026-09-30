@@ -17,6 +17,7 @@ from formation_nav.core import (
     greedy_assignment,
     procrustes_error,
     rotate_z,
+    uncross_assignment,
 )
 
 
@@ -76,6 +77,33 @@ def _kabsch_numpy(P, Q):
     return np.mean(np.sum((P - Q @ R.T) ** 2, axis=1))
 
 
+def _segments_cross(p, q, r, s):
+    """Proper intersection of the 2-D segments p-q and r-s."""
+    def orient(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    return (orient(p, q, r) * orient(p, q, s) < -1e-9) and (orient(r, s, p) * orient(r, s, q) < -1e-9)
+
+
+def test_uncross_assignment_removes_crossing_paths():
+    g = torch.Generator().manual_seed(0)
+    B, n = 64, 8
+    start = torch.rand(B, n, 2, generator=g) * 4.0
+    goal = torch.rand(B, n, 2, generator=g) * 4.0
+    cost = torch.cdist(start, goal)
+    greedy = greedy_assignment(cost)
+    perm = uncross_assignment(cost, greedy)
+    assert (perm.sort(dim=1).values == torch.arange(n)).all()  # still a permutation
+    total = lambda p: cost.gather(2, p.unsqueeze(-1)).sum((1, 2))  # noqa: E731
+    assert (total(perm) <= total(greedy) + 1e-5).all()
+    crossings_before = crossings_after = 0
+    for b in range(B):
+        for i in range(n):
+            for j in range(i + 1, n):
+                crossings_before += _segments_cross(start[b, i], goal[b, greedy[b, i]], start[b, j], goal[b, greedy[b, j]])
+                crossings_after += _segments_cross(start[b, i], goal[b, perm[b, i]], start[b, j], goal[b, perm[b, j]])
+    assert crossings_before > 0 and crossings_after == 0
+
+
 def test_procrustes_matches_reference_and_is_rigid_invariant():
     g = torch.Generator().manual_seed(1)
     target = torch.randn(32, 8, 3, generator=g)
@@ -98,8 +126,10 @@ def test_reset_starts_on_ground_with_formation_above_and_goal_at_distance():
     core, start = make_core(num_envs=64)
     cfg = core.cfg
     assert torch.allclose(start[..., 2], torch.full_like(start[..., 2], cfg.spawn_height))
-    slots = core.slots()
+    slots = core.formation_slots()
     assert torch.allclose(slots[..., 2].min(1).values, torch.full((64,), cfg.formation_altitude), atol=1e-5)
+    # staged take-off: every drone's current slot is its take-off position at t = 0
+    assert torch.allclose(core.slots(), start, atol=1e-6)
     d = (core.goal - core.assembly)[:, :2].norm(dim=-1)
     assert ((d >= cfg.goal_distance[0] - 1e-5) & (d <= cfg.goal_distance[1] + 1e-5)).all()
     # the assigned slots are a permutation of the (rotated) template
@@ -231,10 +261,57 @@ def test_drone_collision_and_ground_crash_terminate():
     assert (reward[0].mean() - reward[1].mean()).item() < -core.cfg.w_crash + 2.0
 
     core, start = make_core(num_envs=1, scenario="none")
-    for _ in range(core.cfg.takeoff_grace + 1):
+    # grace: takeoff_grace steps after the drone's staged lift-off
+    for _ in range(core.cfg.takeoff_grace + int(core.takeoff_delay.min()) + 1):
         core.advance()
     _, terminated = core.update(start, torch.zeros_like(start), up[:1], torch.zeros(1, n, core.cfg.action_dim))
     assert terminated.item()  # still on the ground after the take-off grace period
+    assert core.stats["crash_ground"].item() == 1.0
+
+
+@pytest.mark.parametrize("formation", ["cube", "sphere", "pyramid"])
+def test_staged_takeoff_lifts_the_top_layer_first_and_keeps_the_layer_gaps(formation):
+    E = 8
+    core, start = make_core(num_envs=E, scenario="none", formation=formation)
+    cfg, n = core.cfg, core.n
+    _, up = attitude(E, n)
+    final = core.formation_slots()
+    fz = final[..., 2]
+    top = fz.max(1, keepdim=True).values
+    assert torch.allclose(core.takeoff_delay * cfg.dt, (top - fz + cfg.spawn_height) / cfg.takeoff_speed, atol=1e-5)
+    for step in range(400):
+        core.advance()
+        slots = core.slots().clone()
+        if (core.phase == PHASE_FORM).any():
+            z = slots[..., 2]
+            lifted = z > cfg.spawn_height + 1e-6
+            # drones in the air keep the final vertical gaps between each other; the rest wait
+            dz = z.unsqueeze(2) - z.unsqueeze(1)
+            dfz = fz.unsqueeze(2) - fz.unsqueeze(1)
+            both = lifted.unsqueeze(2) & lifted.unsqueeze(1) & (core.phase == PHASE_FORM).view(E, 1, 1)
+            assert torch.allclose(dz[both], dfz[both], atol=1e-4)
+            waiting = ~lifted & (core.phase == PHASE_FORM).unsqueeze(-1)
+            assert torch.allclose(slots[waiting], start[waiting], atol=1e-5)
+        core.update(slots, torch.zeros_like(slots), up, torch.zeros(E, n, cfg.action_dim))
+        if (core.phase == PHASE_NAV).all():
+            break
+    # FORM -> NAV once the staging is complete (the oracle sits on its slots)
+    t_form = core.stats["time_to_form"].squeeze(-1)
+    assert (t_form >= top.squeeze(-1) / cfg.takeoff_speed - 1e-4).all()
+    assert (t_form <= top.squeeze(-1) / cfg.takeoff_speed + (cfg.form_steps + 2) * cfg.dt).all()
+
+
+def test_takeoff_without_staging_targets_the_formation_directly():
+    core, start = make_core(num_envs=4, scenario="none", staged_takeoff=False)
+    assert torch.allclose(core.slots(), core.formation_slots())
+    assert (core.takeoff_delay == 0).all()
+
+
+def test_altitude_bound_grows_with_tall_formations():
+    core, _ = make_core(num_envs=4, num_drones=16, formation="sphere", scenario="none")
+    top = core.formation_slots()[..., 2].max(1).values
+    assert (top > core.cfg.max_altitude - 1.0).all()  # 16-drone sphere: taller than the default bound allows
+    assert torch.allclose(core.alt_limit, top + 1.0)
 
 
 def test_staged_formation_reward_only_after_form_phase():
@@ -291,6 +368,7 @@ def test_actor_observation_is_translation_invariant():
     core.goal += shift
     core.obs_pos += shift
     core.path_pts += shift
+    core.spawn += shift
     obs_b, _ = core.observations(pos + shift, vel, heading, up, torch.zeros_like(vel))
     assert torch.allclose(obs_a, obs_b, atol=1e-4)
 

@@ -1,0 +1,24 @@
+# First-flight check with a scripted policy (scripts/smoke_test.py)
+headless: true
+lite: false               # true: pure-PyTorch quadrotor model (formation_nav/quadrotor.py) instead of Isaac Sim
+
+sim: ${task.sim}
+env: ${task.env}
+
+seed: 0
+output_dir: smoke_results
+formations: [cube, sphere, pyramid, plane]
+scenarios: [none, static]  # the scripted policy avoids nothing; static pillars are skirted by the planned route
+
+viewer:
+  resolution: [960, 720]
+  eye: [-4., -4., 3.]
+  lookat: [0., 0., 1.]
+
+defaults:
+  - task: FormationNav
+  - _self_
+
+task:
+  env:
+    num_envs: 16

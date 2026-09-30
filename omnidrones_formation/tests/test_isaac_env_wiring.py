@@ -4,22 +4,31 @@ Wiring test for `formation_nav/env.py` without Isaac Sim.
 Isaac Sim / OmniDrones modules are replaced by small fakes that mirror the real call flow
 of `omni_drones.envs.isaac_env.IsaacEnv` (init -> _design_scene -> _set_specs, _reset ->
 _reset_idx -> _compute_state_and_obs, _step -> substeps of _pre_sim_step + physics ->
-_post_sim_step -> obs -> reward). The fake drone integrates the velocity commands returned by
-the fake controller. This checks the Hydra configs, every tensordict key and shape, the
-controller / prim-view calls and a short MAPPO-LSTM training + evaluation through env.py.
-It does not check the Isaac Sim API itself.
+_post_sim_step -> obs -> reward). The fake drone is the quadrotor model of `quadrotor.py`
+(OmniDrones' rotor, force and downwash models, the Crazyflie asset's mass) driven by the real
+controller of env.py through the same attributes OmniDrones' MultirotorBase has (`params`,
+`forces`, `_view.get_body_masses`, ...). This checks the Hydra configs, every tensordict key
+and shape, the controller / prim-view calls, that a formation holds under the downwash, and a
+short MAPPO-LSTM training + evaluation through env.py. It does not check the Isaac Sim API.
 """
 
 import os
 import sys
 import types
 
+import math
+
 import pytest
 import torch
+import yaml
 from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
+from formation_nav.controller import quat_rotate
+from formation_nav.quadrotor import OMNIDRONES_ASSETS, QuadrotorModel
+
 CFG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "cfg")
+ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "formation_nav", "assets")
 
 
 # ----------------------------------------------------------------------------------------
@@ -27,62 +36,89 @@ CFG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "c
 # ----------------------------------------------------------------------------------------
 
 
+class FakeArticulationView:
+    def __init__(self, drone):
+        self.drone = drone
+
+    def get_body_masses(self):
+        # base link + 4 rotor links, as in OmniDrones' cf2x_pybullet.usd
+        E, n = self.drone.num_envs, self.drone.n
+        return torch.tensor([0.027, 1e-4, 1e-4, 1e-4, 1e-4]).expand(E, n, 5).clone()
+
+
 class FakeDrone:
+    """OmniDrones' MultirotorBase interface on top of the pure-PyTorch quadrotor model."""
+
     num_envs = None
     device = "cpu"
 
-    def __init__(self):
+    def __init__(self, name):
+        with open(os.path.join(ASSET_DIR, f"{name.lower()}.yaml")) as f:
+            self.params = yaml.safe_load(f)
         self.n = 0
-        self.last_cmds = None
+        self.apply_calls = 0
 
     def spawn(self, translations):
         self.n = len(translations)
 
     def initialize(self):
         E, n = self.num_envs, self.n
-        self.pos = torch.zeros(E, n, 3)
-        self.rot = torch.tensor([1.0, 0, 0, 0]).repeat(E, n, 1)
-        self.vel_w = torch.zeros(E, n, 6)
-        self.heading = torch.tensor([1.0, 0, 0]).repeat(E, n, 1)
-        self.up = torch.tensor([0.0, 0, 1]).repeat(E, n, 1)
-        self.cmds = torch.zeros(E, n, 3)
+        env = FakeIsaacEnv.instance
+        asset = OMNIDRONES_ASSETS[self.params["name"]]
+        scale = float(env.cfg.task.get("downwash_scale", 1.0))
+        self.quad = QuadrotorModel(self.params, (E, n), env.dt, downwash=scale > 0, downwash_scale=scale, **asset)
+        self._view = FakeArticulationView(self)
+        self.forces = torch.zeros(E, n, 3)
+        self.cmds = torch.zeros(E, n, 4)
+        self._sync()
+
+    def _sync(self):
+        q = self.quad
+        self.pos, self.rot = q.pos.clone(), q.rot.clone()
+        self.vel_w = torch.cat([q.vel, quat_rotate(q.rot, q.omega)], -1)
+        self.heading, self.up = q.axes()
 
     def _reset_idx(self, env_ids, train=True):
-        self.cmds[env_ids] = 0.0
+        # like OmniDrones: rotors at the hover throttle of the base-link mass
+        self.quad.throttle[env_ids] = math.sqrt(0.027 * 9.81 / float(self.quad.max_thrust.sum()))
 
     def set_world_poses(self, pos, rot, env_ids):
         assert pos.shape == (len(env_ids), self.n, 3) and rot.shape == (len(env_ids), self.n, 4)
-        self.pos[env_ids] = pos - FakeIsaacEnv.instance.envs_positions[env_ids].unsqueeze(1)
+        throttle = self.quad.throttle[env_ids].clone()
+        self.quad.reset(env_ids, pos - FakeIsaacEnv.instance.envs_positions[env_ids].unsqueeze(1), rot)
+        self.quad.throttle[env_ids] = throttle
+        self._sync()
 
     def set_velocities(self, vel, env_ids):
         assert vel.shape == (len(env_ids), self.n, 6)
-        self.vel_w[env_ids] = vel
+        self.quad.vel[env_ids] = vel[..., :3]
+        self._sync()
 
     def get_state(self):
+        self._sync()
         return torch.cat([self.pos, self.rot, self.vel_w, self.heading, self.up], -1)
 
     def apply_action(self, cmds):
-        assert cmds.shape == (self.num_envs, self.n, 3)
+        assert cmds.shape == (self.num_envs, self.n, 4)
+        assert torch.isfinite(cmds).all()
         self.cmds = cmds
-        return cmds.norm(dim=-1)
+        self.apply_calls += 1
+        return self.quad.throttle.sum(-1)
 
     def physics(self, dt):
-        self.vel_w[..., :3] += (self.cmds - self.vel_w[..., :3]) * 0.5
-        self.pos += self.vel_w[..., :3] * dt
-        self.pos[..., 2].clamp_(min=0.0)
-
-
-class FakeController:
-    def compute(self, root_state, target_vel=None, target_yaw=None, **kw):
-        assert root_state.shape[-1] == 13
-        assert target_yaw.shape[-1] == 1 and target_vel.shape[:-1] == root_state.shape[:-1]
-        return target_vel  # the fake drone tracks velocity commands directly
+        self.quad.step(self.cmds)
+        self.forces = self.quad.external_force.clone()  # OmniDrones: downwash (+ drag, zero)
 
 
 class MultirotorBase:
     @staticmethod
     def make(name, controller=None, device="cpu"):
-        return FakeDrone(), FakeController()
+        assert controller is None  # env.py builds its own velocity controller
+        return FakeDrone(name), None
+
+    @staticmethod
+    def downwash(p0, p1, p1_t, kr=2, kz=1):
+        return torch.ones(p0.shape[0], p0.shape[0] - 1, 3)
 
 
 class RigidPrimView:
@@ -284,7 +320,8 @@ def test_task_yaml_keys_match_the_config_dataclass():
     from formation_nav.core import FormationNavConfig
 
     cfg = compose("train", [])
-    extra = {"name", "env", "sim", "drone_model", "obstacle_physics_collision", "follow_camera"}
+    extra = {"name", "env", "sim", "drone_model", "controller", "downwash_scale", "obstacle_physics_collision",
+             "follow_camera"}
     names = {f.name for f in fields(FormationNavConfig)}
     unknown = set(cfg.task.keys()) - names - extra
     assert not unknown, f"unknown task keys (typo?): {unknown}"
@@ -298,6 +335,29 @@ def test_task_yaml_keys_match_the_config_dataclass():
             continue
         assert getattr(loaded, f.name) == getattr(default, f.name), f.name
     assert cfg.sim.dt == 0.016 and cfg.sim.substeps == 2
+    assert cfg.task.drone_model.name == "Crazyflie"
+
+
+def test_controller_block_matches_env_defaults(fn_env_module):
+    cfg = compose("train", [])
+    assert set(cfg.task.controller.keys()) == set(fn_env_module.CONTROLLER_DEFAULTS)
+
+
+def test_hummingbird_preset_composes():
+    from omegaconf import OmegaConf
+
+    from formation_nav.core import FormationNavConfig
+
+    cfg = compose("train", ["task=FormationNavHummingbird"])
+    assert cfg.task.name == "FormationNav" and cfg.task.drone_model.name == "Hummingbird"
+    task = FormationNavConfig.from_dict(OmegaConf.to_container(cfg.task))
+    assert task.formation_spacing == 1.2 and task.drone_radius == 0.25 and task.num_drones == 8
+    assert cfg.task.controller.downwash_feedforward is True
+
+
+def test_smoke_config_composes():
+    cfg = compose("smoke", ["lite=true"])
+    assert cfg.lite is True and cfg.task.env.num_envs == 16 and "cube" in cfg.formations
 
 
 def test_eval_config_composes():
@@ -312,6 +372,8 @@ def test_env_specs_reset_step_and_obstacle_prims(fn_env_module):
     n, core = 4, env.core
     assert len(created) >= core.M
     assert {p[1] for p in created} == {"Cylinder", "Sphere"}
+    # the controller uses the simulated mass (all bodies), not the yaml's 0.028 kg
+    assert abs(env.controller.mass.item() - 0.0274) < 1e-6
     td = env.reset()
     assert td["agents", "observation"].shape == (4, n, core.obs_dim)
     assert td["agents", "observation_central"].shape == (4, core.state_dim)
@@ -322,12 +384,48 @@ def test_env_specs_reset_step_and_obstacle_prims(fn_env_module):
     td.set(("agents", "action"), torch.zeros(4, n, 4))
     td["agents", "action"][..., 2] = 1.0
     td["agents", "action"][..., 3] = 1.0  # straight up at max speed
-    out = env.step(td)
+    calls = env.drone.apply_calls
+    for _ in range(10):
+        out = env.step(td)
+        td = out["next"].set(("agents", "action"), td["agents", "action"])
+    assert env.drone.apply_calls - calls == 10 * cfg.sim.substeps  # controller runs every physics step
     assert out["next", "agents", "reward"].shape == (4, n, 1)
     assert out["next", "done"].shape == (4, 1)
-    assert (env.drone.pos[..., 2] > cfg.task.spawn_height).all()
+    assert (env.drone.pos[..., 2] > cfg.task.spawn_height + 0.1).all()
     for k in ("success", "formation_error", "collisions_obstacle"):
         assert out["next", "stats", k].shape == (4, 1)
+
+
+@pytest.mark.parametrize("feedforward", [True, False])
+def test_stacked_formation_holds_only_with_the_downwash_feedforward(fn_env_module, feedforward):
+    """Scripted slot seeking through env.py: take-off and a cube of 8 Crazyflies under the downwash."""
+    from torchrl.envs.utils import step_mdp
+
+    from formation_nav.scripted import SlotSeeker
+
+    cfg = compose("train", [
+        "task.env.num_envs=2", "task.sim.device=cpu", "task.num_drones=8", "task.scenario=none",
+        "task.formation=cube", f"task.controller.downwash_feedforward={feedforward}",
+    ])
+    env = fn_env_module.FormationNav(cfg, headless=True)
+    policy = SlotSeeker(env.core.cfg.max_speed)
+    td = env.reset()
+    crashed = torch.zeros(2, dtype=torch.bool)
+    for _ in range(200):  # 6.4 s: staged take-off (2.5 s), forming, first waypoints
+        out = env.step(policy(td))
+        crashed |= out["next", "terminated"].squeeze(-1)
+        td = step_mdp(out)
+    formed = env.core.stats["time_to_form"].squeeze(-1) > 0
+    if feedforward:
+        assert formed.all() and not crashed.any()
+    else:
+        assert crashed.all() and not formed.any()  # the lower layer sinks to the ground
+
+
+def test_downwash_scale_wraps_omnidrones_model(fn_env_module):
+    scaled = fn_env_module._scaled_downwash(0.25)
+    p = torch.zeros(3, 3)
+    assert torch.allclose(scaled(p, p, p, kz=0.3), torch.full((3, 2, 3), 0.25))
 
 
 def test_training_and_evaluation_run_through_env_py(fn_env_module, tmp_path):

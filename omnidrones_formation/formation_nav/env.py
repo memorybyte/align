@@ -5,14 +5,17 @@ A swarm of quadrotors takes off from the ground, builds a given formation, flies
 goal through static and/or dynamic obstacles (or none), and holds the formation there.
 
 The task logic lives in `core.py` (pure PyTorch); this class only
-  * spawns the drones, pillars and moving spheres,
-  * converts the policy's velocity commands to rotor commands with the Lee controller,
+  * spawns the drones (Crazyflie by default), pillars and moving spheres,
+  * converts the policy's velocity commands to rotor commands with the Lee controller of
+    `controller.py` (gains for the drone model, simulated mass, feed-forward of the downwash
+    force OmniDrones applies between the drones),
   * reads the drone state and hands it to the core.
 
 Importing this module registers the environment in `IsaacEnv.REGISTRY` under the name
 "FormationNav". It must be imported after the Isaac Sim app is running.
 """
 
+import logging
 from typing import List, Optional
 
 import torch
@@ -30,10 +33,31 @@ from omni_drones.envs.utils import create_obstacle
 from omni_drones.robots.drone import MultirotorBase
 from omni_drones.views import RigidPrimView
 
+from .controller import LeeVelocityController
 from .core import STAT_KEYS, FormationNavConfig, FormationNavCore
 
 PILLAR_COLOR = (0.55, 0.55, 0.6)
 MOVER_COLOR = (0.95, 0.45, 0.1)
+
+# task config `controller:` block (see cfg/task/FormationNav.yaml)
+CONTROLLER_DEFAULTS = dict(
+    gains=None,
+    mass=None,
+    integral_gain=[0.0, 0.0, 0.0],
+    integral_limit=[0.0, 0.0, 0.0],
+    integral_min_altitude=0.15,
+    downwash_feedforward=True,
+)
+
+
+def _scaled_downwash(scale: float):
+    """OmniDrones' downwash model (`MultirotorBase.downwash`) scaled by `scale` (0 = off)."""
+    base = MultirotorBase.downwash
+
+    def downwash(p0, p1, p1_t, kr=2, kz=1):
+        return base(p0, p1, p1_t, kr=kr, kz=kz) * scale
+
+    return downwash
 
 
 def _color(prim, rgb):
@@ -58,7 +82,7 @@ class FormationNav(IsaacEnv):
 
     ## Action
     `dir_speed` (paper): [dir_x, dir_y, dir_z, speed] in [-1, 1] ->
-    v = max_speed * |speed| * dir / |dir|, tracked by the Lee position controller.
+    v = max_speed * |speed| * dir / |dir|, tracked by the Lee controller of `controller.py`.
     `velocity`: [v_x, v_y, v_z] * max_speed.
 
     ## Reward
@@ -78,9 +102,15 @@ class FormationNav(IsaacEnv):
         self.fn_cfg.dt = cfg.sim.dt * cfg.sim.substeps
         self.obstacle_collision = bool(task_cfg.get("obstacle_physics_collision", False))
         self.follow_camera = bool(task_cfg.get("follow_camera", True))
+        self.downwash_scale = float(task_cfg.get("downwash_scale", 1.0))
+        self.ctrl_cfg = dict(CONTROLLER_DEFAULTS, **(task_cfg.get("controller") or {}))
+        unknown = set(self.ctrl_cfg) - set(CONTROLLER_DEFAULTS)
+        if unknown:
+            raise ValueError(f"unknown task.controller keys: {sorted(unknown)}")
         super().__init__(cfg, headless)
 
         self.drone.initialize()
+        self.controller = self._make_controller()
         self.static_view: Optional[RigidPrimView] = None
         self.dynamic_view: Optional[RigidPrimView] = None
         if self.core.M_s > 0:
@@ -106,12 +136,10 @@ class FormationNav(IsaacEnv):
 
     def _design_scene(self) -> Optional[List[str]]:
         cfg = self.fn_cfg
-        drone_model_cfg = self.cfg.task.drone_model
-        self.drone, self.controller = MultirotorBase.make(
-            drone_model_cfg.name, drone_model_cfg.controller, device=self.device
-        )
-        if self.controller is None:
-            raise ValueError("FormationNav needs a velocity-capable controller, e.g. LeePositionController.")
+        # the drone only; the velocity controller is built in __init__ once masses are known
+        self.drone, _ = MultirotorBase.make(self.cfg.task.drone_model.name, None, device=self.device)
+        if self.downwash_scale != 1.0:
+            self.drone.downwash = _scaled_downwash(self.downwash_scale)
 
         scene_utils.design_scene()
 
@@ -143,6 +171,35 @@ class FormationNav(IsaacEnv):
             if not self.obstacle_collision:
                 kit_utils.set_collision_properties(prim.GetPath().pathString, collision_enabled=False)
         return ["/World/defaultGroundPlane"]
+
+    def _simulated_mass(self) -> Optional[float]:
+        """Total mass of one drone as simulated (all rigid bodies of its articulation)."""
+        try:
+            masses = self.drone._view.get_body_masses()
+            return float(masses.reshape(-1, masses.shape[-1])[0].sum())
+        except Exception as e:  # e.g. a different Isaac Sim API
+            logging.warning(f"FormationNav: could not read the body masses ({e!r})")
+            return None
+
+    def _make_controller(self) -> LeeVelocityController:
+        c = self.ctrl_cfg
+        yaml_mass = float(self.drone.params["mass"])
+        sim_mass = self._simulated_mass()
+        mass = c["mass"] if c["mass"] is not None else (sim_mass if sim_mass is not None else yaml_mass)
+        print(
+            f"[FormationNav] {self.drone.params.get('name')}: mass in the parameter yaml {yaml_mass:.4f} kg, "
+            f"simulated {sim_mass if sim_mass is None else round(sim_mass, 4)} kg -> controller uses {mass:.4f} kg; "
+            f"downwash scale {self.downwash_scale}, feed-forward {c['downwash_feedforward']}"
+        )
+        controller = LeeVelocityController(
+            self.drone.params,
+            gains=c["gains"],
+            mass=mass,
+            dt=self.cfg.sim.dt,
+            integral_gain=c["integral_gain"],
+            integral_limit=c["integral_limit"],
+        )
+        return controller.to(self.device)
 
     def _set_specs(self):
         n = self.fn_cfg.num_drones
@@ -209,6 +266,8 @@ class FormationNav(IsaacEnv):
             start + self.envs_positions[env_ids].unsqueeze(1), self.identity_rot[env_ids], env_ids
         )
         self.drone.set_velocities(torch.zeros(len(env_ids), self.fn_cfg.num_drones, 6, device=self.device), env_ids)
+        self.drone.forces[env_ids] = 0.0  # stale downwash of the previous episode
+        self.controller.reset(env_ids)
         poses = self.core.obstacle_render_poses()
         if self.static_view is not None:
             self.static_view.set_world_poses(
@@ -234,7 +293,19 @@ class FormationNav(IsaacEnv):
         target_vel = self.core.action_to_velocity(actions)
         self.drone.get_state()
         root_state = torch.cat([self.drone.pos, self.drone.rot, self.drone.vel_w[..., :6]], dim=-1)
-        rotor_cmds = self.controller.compute(root_state, target_vel=target_vel, target_yaw=self.target_yaw)
+        target_acc = None
+        if self.ctrl_cfg["downwash_feedforward"]:
+            # OmniDrones pushes every drone with the downwash of the drones above it (up to ~0.6 g
+            # at 1 m, more than the velocity loop can absorb); `drone.forces` is that force as
+            # applied in the previous physics step
+            target_acc = -self.drone.forces / self.controller.mass
+        rotor_cmds = self.controller.compute(
+            root_state,
+            target_vel=target_vel,
+            target_acc=target_acc,
+            target_yaw=self.target_yaw,
+            integrate=self.drone.pos[..., 2] > self.ctrl_cfg["integral_min_altitude"],
+        )
         self.effort = self.drone.apply_action(rotor_cmds)
 
     def _post_sim_step(self, tensordict: TensorDictBase):
