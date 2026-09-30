@@ -152,10 +152,10 @@ tests/               103 unit / integration tests (run without Isaac Sim)
 Step by step, with troubleshooting: [docs/INSTALL.md](docs/INSTALL.md). In short:
 
 1. Use a supported GPU (RTX 30/40-class; **not** Blackwell).
-2. Install Isaac Sim 4.1.0 from the standalone zip in the Download Archive.
-3. Create a Python 3.10 conda env hooked to Isaac Sim with OmniDrones' `conda_setup`, then
-   `pip install -e .` in OmniDrones (`main`, developed against commit `9ce7c20`). Isaac Lab is
-   **not** needed.
+2. Get Isaac Sim 4.1.0. It is no longer on NVIDIA's download page; use the NGC container
+   `nvcr.io/nvidia/isaac-sim:4.1.0` (recommended) or the pip wheels `isaacsim==4.1.0.0`.
+3. `pip install -e .` in OmniDrones (`main`, developed against commit `9ce7c20`) with Isaac Sim's
+   Python. Isaac Lab is **not** needed.
 4. `cd omnidrones_formation && pip install -e .`
 5. Run `python scripts/smoke_test.py` (first-flight check, below).
 

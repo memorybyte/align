@@ -26,85 +26,136 @@ version. On a Blackwell machine you can:
 
 ## 1. Requirements for Isaac Sim 4.1
 
-* Ubuntu 22.04 or 20.04, x86_64. OmniDrones does not support Windows.
+* Ubuntu 22.04 (20.04 works for the container route only). OmniDrones does not support Windows.
 * An NVIDIA RTX GPU (see above) with 8 GB of VRAM or more. The default 512 environments × 8
   drones need more; lower `task.env.num_envs` on smaller cards.
 * NVIDIA driver 535 or later. Check it with `nvidia-smi`.
 * 32 GB RAM and about 50 GB of free disk.
-* Miniconda or Anaconda.
 
-## 2. Install Isaac Sim 4.1.0
+## 2. Get Isaac Sim 4.1.0
 
-OmniDrones' docs assume the Omniverse Launcher, which NVIDIA retired on 1 October 2025. Use the
-standalone package instead:
+Isaac Sim 4.1.0 is **no longer on the download page**. OmniDrones' docs assume the Omniverse
+Launcher, which NVIDIA retired on 1 October 2025. NVIDIA's current advice for old releases is
+to use either the **NGC container** or the **pip wheels**:
 
-1. In the Isaac Sim documentation, open **Download Isaac Sim → Download Archive** and get
-   **Isaac Sim 4.1.0 for Linux** (a zip of about 7.8 GB).
-2. Unpack it and run the post-install step:
-   ```bash
-   mkdir -p ~/isaacsim/isaac-sim-4.1.0 && cd ~/isaacsim/isaac-sim-4.1.0
-   unzip ~/Downloads/<the downloaded isaac-sim 4.1.0 zip>
-   ./post_install.sh                  # if present in the package
-   ./isaac-sim.selector.sh            # optional: start the app once; the first start compiles shaders (several minutes)
-   ```
-3. Point OmniDrones to it (add the line to `~/.bashrc`, then run `source ~/.bashrc`):
-   ```bash
-   export ISAACSIM_PATH="$HOME/isaacsim/isaac-sim-4.1.0"
-   ```
-4. Check: `$ISAACSIM_PATH/python.sh -c "from isaacsim import SimulationApp; print('ok')"`
+| Route | Pros | Cons |
+|---|---|---|
+| **A. Docker container `nvcr.io/nvidia/isaac-sim:4.1.0`** (recommended) | the exact 4.1.0 build, all files OmniDrones expects, works on Ubuntu 20.04 and 22.04 | needs Docker + NVIDIA Container Toolkit + a free NGC account; headless (training, videos and the smoke test all work headless) |
+| **B. pip wheels `isaacsim==4.1.0.0`** | no Docker, the GUI works (`headless=false`) | Ubuntu 22.04 only (GLIBC ≥ 2.34), one extra environment variable for OmniDrones |
 
-> **Alternative (not tested with OmniDrones): pip wheels**, Ubuntu 22.04 only (needs GLIBC 2.34 or later):
-> `pip install isaacsim==4.1.0.0 isaacsim-extscache-physics==4.1.0.0 isaacsim-extscache-kit==4.1.0.0 isaacsim-extscache-kit-sdk==4.1.0.0 --extra-index-url https://pypi.nvidia.com`
-> run inside the conda environment of section 3. It replaces steps 1–3 above and the
-> `conda_setup` copy.
-> OmniDrones' `init_simulation_app` reads `$EXP_PATH/omni.isaac.sim.python.kit`, which the
-> binary package's setup script sets. With pip you must point `EXP_PATH` yourself at the `apps`
-> folder of the installed `isaacsim` package.
+### Route A: container (recommended)
 
-## 3. Python environment and OmniDrones
+One-time setup:
+
+1. Install [Docker](https://docs.docker.com/engine/install/ubuntu/) and the
+   [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+   Check it with `docker run --rm --gpus all ubuntu nvidia-smi`.
+2. Create a free account at [ngc.nvidia.com](https://ngc.nvidia.com), then open
+   **Setup → Generate API Key**.
+3. Pull the image and clone the code on the host:
 
 ```bash
-conda create -n sim python=3.10 -y
-conda activate sim
+docker login nvcr.io                  # username: $oauthtoken   password: <your NGC API key>
+docker pull nvcr.io/nvidia/isaac-sim:4.1.0
 
-git clone https://github.com/btx0424/OmniDrones.git
-cd OmniDrones
-git checkout 9ce7c20            # optional: the commit FormationNav was developed against
+git clone https://github.com/btx0424/OmniDrones.git ~/OmniDrones
+cd ~/OmniDrones && git checkout 9ce7c20 && cd -     # optional: the commit FormationNav was developed against
+# ~/align = this repository
 
-# hook Isaac Sim into the conda env: activating it now sources $ISAACSIM_PATH/setup_conda_env.sh
-cp -r conda_setup/etc $CONDA_PREFIX
-conda deactivate && conda activate sim
-
-python -c "from isaacsim import SimulationApp"                  # must not fail
-python -c "import torch; print(torch.__version__, torch.__path__)"   # 2.2.2, from Isaac Sim's bundled packages
-
-pip install -e .                # OmniDrones (+ hydra, wandb, torchrl 0.3.1, ...)
+mkdir -p ~/docker/isaac-sim/{cache/kit,cache/ov,cache/pip,cache/glcache,cache/computecache,logs,data}
+docker run --name omnidrones --entrypoint bash -it --gpus all --network=host \
+  -e "ACCEPT_EULA=Y" -e "PRIVACY_CONSENT=Y" \
+  -v ~/OmniDrones:/workspace/OmniDrones:rw -v ~/align:/workspace/align:rw \
+  -v ~/docker/isaac-sim/cache/kit:/isaac-sim/kit/cache:rw \
+  -v ~/docker/isaac-sim/cache/ov:/root/.cache/ov:rw \
+  -v ~/docker/isaac-sim/cache/pip:/root/.cache/pip:rw \
+  -v ~/docker/isaac-sim/cache/glcache:/root/.cache/nvidia/GLCache:rw \
+  -v ~/docker/isaac-sim/cache/computecache:/root/.nv/ComputeCache:rw \
+  -v ~/docker/isaac-sim/logs:/root/.nvidia-omniverse/logs:rw \
+  -v ~/docker/isaac-sim/data:/root/.local/share/ov/data:rw \
+  nvcr.io/nvidia/isaac-sim:4.1.0
 ```
 
-Do not `pip install torch` into this environment. PyTorch comes with Isaac Sim, and a second
-copy breaks it.
-
-**Isaac Lab is not needed.** OmniDrones' guide installs it next, but only its `Forest` and
-`Pinball` tasks use it; OmniDrones prints a notice and continues without it. FormationNav senses
-obstacles analytically.
-
-Check OmniDrones on its own (`wandb.mode=disabled` avoids needing a wandb account):
+Inside the container, Isaac Sim lives in `/isaac-sim`. Use its bundled Python (`/isaac-sim/python.sh`)
+for everything. It already has Python 3.10 and PyTorch 2.2.2, and it sets `EXP_PATH`, which
+OmniDrones needs:
 
 ```bash
-cd scripts
+# known Isaac Sim 4.x issue with OmniDrones (see Troubleshooting)
+sed -i 's/self.get_world_poses(usd=usd)/self.get_world_poses()/' \
+    /isaac-sim/exts/omni.isaac.core/omni/isaac/core/prims/xform_prim_view.py
+
+alias pysim=/isaac-sim/python.sh
+cd /workspace/OmniDrones && pysim -m pip install -e .
+cd /workspace/align/omnidrones_formation && pysim -m pip install -e . pytest
+pysim -m pytest tests -q
+pysim scripts/smoke_test.py                 # first flight in Isaac Sim (headless)
+```
+
+Afterwards, `docker start -ai omnidrones` reopens the same container with everything installed.
+In the rest of this guide, read `python` as `/isaac-sim/python.sh` when you are inside the container.
+
+### Route B: pip wheels (Ubuntu 22.04)
+
+```bash
+conda create -n sim python=3.10 -y && conda activate sim
+pip install --upgrade pip
+pip install torch==2.2.2 --index-url https://download.pytorch.org/whl/cu118
+pip install isaacsim==4.1.0.0 isaacsim-extscache-physics==4.1.0.0 \
+    isaacsim-extscache-kit==4.1.0.0 isaacsim-extscache-kit-sdk==4.1.0.0 \
+    --extra-index-url https://pypi.nvidia.com
+# if pip finds no 4.1.0.0, list what exists: pip index versions isaacsim --extra-index-url https://pypi.nvidia.com
+
+# OmniDrones reads $EXP_PATH/omni.isaac.sim.python.kit; the binary package's scripts set it, pip does not
+SITE=$(python -c "import importlib.util, os; print(os.path.dirname(importlib.util.find_spec('isaacsim').origin))")
+export EXP_PATH="$SITE/apps"                 # add both exports to ~/.bashrc or $CONDA_PREFIX/etc/conda/activate.d/
+export OMNI_KIT_ACCEPT_EULA=YES
+ls "$EXP_PATH/omni.isaac.sim.python.kit" || find "$SITE" -name omni.isaac.sim.python.kit   # adjust EXP_PATH if needed
+
+# same Isaac Sim 4.x fix as in route A
+sed -i 's/self.get_world_poses(usd=usd)/self.get_world_poses()/' \
+    $(find "$SITE" -path "*omni/isaac/core/prims/xform_prim_view.py")
+
+python -c "from isaacsim import SimulationApp; print('ok')"
+git clone https://github.com/btx0424/OmniDrones.git && cd OmniDrones
+git checkout 9ce7c20        # optional
+pip install -e .            # do NOT copy conda_setup/etc: that hook is for the binary package
+```
+
+The first start of Isaac Sim, by either route, compiles shaders and downloads extensions, which
+can take 5–10 minutes. Later starts are much faster.
+
+> I could not run either route here (no GPU, and NVIDIA's sites are blocked from my sandbox).
+> The container tag and the pip naming scheme come from NVIDIA's NGC catalog and Isaac Lab's
+> install docs. If a command fails, send me the error.
+
+**Not recommended: Isaac Sim 4.2 / 4.5.** They ship PyTorch 2.4 / 2.5, but OmniDrones pins
+torchrl 0.3.1, which is built for PyTorch 2.2. Using them would mean upgrading torchrl and
+tensordict and fixing OmniDrones (untested).
+
+**Isaac Lab is not needed.** OmniDrones' guide installs it, but only its `Forest` and `Pinball`
+tasks use it; OmniDrones prints a notice and continues without it. FormationNav senses obstacles
+analytically.
+
+## 3. Check OmniDrones on its own
+
+`wandb.mode=disabled` avoids needing a wandb account:
+
+```bash
+cd OmniDrones/scripts
 python train.py algo=ppo headless=true wandb.mode=disabled total_frames=100000
 ```
 
 ## 4. FormationNav
 
 ```bash
-cd /path/to/align/omnidrones_formation
+cd align/omnidrones_formation
 pip install -e .
 
 python -m pytest tests -q                              # CPU only, no Isaac Sim needed
 python scripts/smoke_test.py lite=true                 # expected numbers, pure-PyTorch quadrotor model
 python scripts/smoke_test.py                           # the same check in Isaac Sim (headless)
-python scripts/smoke_test.py headless=false task.env.num_envs=4   # watch it
+python scripts/smoke_test.py headless=false task.env.num_envs=4   # watch it (route B)
 ```
 
 The smoke test flies a scripted policy (each drone goes straight to its slot) and needs no
@@ -125,9 +176,9 @@ python scripts/train.py task=FormationNavHummingbird viewer.eye=[-7.,-7.,5.]   #
 ## 5. Troubleshooting
 
 * **`TypeError: ArticulationView.get_world_poses() got an unexpected keyword argument 'usd'`**,
-  raised from `$ISAACSIM_PATH/exts/omni.isaac.core/omni/isaac/core/prims/xform_prim_view.py`:
-  this is a known Isaac Sim 4.x issue (OmniDrones' troubleshooting page). At line 189 of that
-  file, change `self.get_world_poses(usd=usd)` to `self.get_world_poses()`.
+  raised from `.../omni/isaac/core/prims/xform_prim_view.py`: this is a known Isaac Sim 4.x issue
+  (OmniDrones' troubleshooting page). The `sed` line in section 2 fixes it. By hand, change
+  `self.get_world_poses(usd=usd)` to `self.get_world_poses()` at line 189.
 * **The first start hangs at "Waiting for compilation of ray tracing shaders"**: this is a
   one-time shader compilation of several minutes. If it happens on every start, see OmniDrones'
   troubleshooting page.
@@ -135,8 +186,12 @@ python scripts/train.py task=FormationNavHummingbird viewer.eye=[-7.,-7.,5.]   #
   Nucleus/asset server. FormationNav needs none: the drone assets ship with OmniDrones and the
   ground plane and obstacles are created locally. The troubleshooting page shows how to skip the
   wait.
-* **`KeyError: 'EXP_PATH'`**: the conda hook did not run. Check `echo $ISAACSIM_PATH`, check that
-  `$CONDA_PREFIX/etc/conda/activate.d/env_vars.sh` exists, and re-activate the environment.
+* **`KeyError: 'EXP_PATH'`**: in the container, you started Python without `/isaac-sim/python.sh`.
+  With pip, `EXP_PATH` is not exported (route B).
+* **`could not select device driver "" with capabilities: [[gpu]]`** (Docker): install the NVIDIA
+  Container Toolkit, then run `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`.
+* **`unauthorized` when pulling from nvcr.io**: log in with the user name `$oauthtoken`, spelled
+  exactly like that, and your NGC API key as the password.
 * **CUDA / `no kernel image is available` errors**: the GPU is too new (Blackwell, see section 0)
   or the driver is older than 535.
 * **The lower drones of cube / sphere / pyramid formations sink**: check that
