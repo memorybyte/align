@@ -59,6 +59,8 @@ def main(cfg):
     OmegaConf.resolve(cfg)
     OmegaConf.set_struct(cfg, False)
     torch.manual_seed(cfg.seed)
+    # any formation can be checked: add the requested ones to the pool the env samples from
+    cfg.task.formation_pool = list(dict.fromkeys(list(cfg.task.formation_pool) + list(cfg.formations)))
 
     simulation_app = None
     if cfg.lite:

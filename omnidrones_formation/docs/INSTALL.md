@@ -55,7 +55,8 @@ standalone package instead:
 
 > **Alternative (not tested with OmniDrones): pip wheels**, Ubuntu 22.04 only (needs GLIBC 2.34 or later):
 > `pip install isaacsim==4.1.0.0 isaacsim-extscache-physics==4.1.0.0 isaacsim-extscache-kit==4.1.0.0 isaacsim-extscache-kit-sdk==4.1.0.0 --extra-index-url https://pypi.nvidia.com`
-> in the Python 3.10 environment of step 3, instead of steps 1–3 above and the `conda_setup` copy.
+> run inside the conda environment of section 3. It replaces steps 1–3 above and the
+> `conda_setup` copy.
 > OmniDrones' `init_simulation_app` reads `$EXP_PATH/omni.isaac.sim.python.kit`, which the
 > binary package's setup script sets. With pip you must point `EXP_PATH` yourself at the `apps`
 > folder of the installed `isaacsim` package.
