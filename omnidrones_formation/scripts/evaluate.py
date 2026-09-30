@@ -26,7 +26,7 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 
-from omni_drones import init_simulation_app  # noqa: E402
+from formation_nav.app import start_simulation_app  # noqa: E402
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "cfg")
 
@@ -36,7 +36,7 @@ def main(cfg):
     OmegaConf.register_new_resolver("eval", eval)
     OmegaConf.resolve(cfg)
     OmegaConf.set_struct(cfg, False)
-    simulation_app = init_simulation_app(cfg)
+    simulation_app = start_simulation_app(cfg)
 
     from torchrl.envs.transforms import InitTracker, TransformedEnv
 
@@ -55,7 +55,7 @@ def main(cfg):
     base_env = IsaacEnv.REGISTRY[cfg.task.name](cfg, headless=cfg.headless)
     env = TransformedEnv(base_env, InitTracker())
     env.set_seed(cfg.seed)
-    base_env.enable_render(True)
+    base_env.enable_render(bool(cfg.eval_record_video) or not cfg.headless)
     base_env.eval()
     env.eval()
 

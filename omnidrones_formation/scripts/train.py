@@ -21,7 +21,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 
-from omni_drones import init_simulation_app  # noqa: E402
+from formation_nav.app import start_simulation_app  # noqa: E402
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "cfg")
 
@@ -83,7 +83,7 @@ def main(cfg):
     OmegaConf.register_new_resolver("eval", eval)
     OmegaConf.resolve(cfg)
     OmegaConf.set_struct(cfg, False)
-    simulation_app = init_simulation_app(cfg)
+    simulation_app = start_simulation_app(cfg)
 
     # everything below needs the running simulation app
     import wandb
@@ -140,13 +140,16 @@ def main(cfg):
     def evaluate(tag: str):
         eval_dir = os.path.join(out, f"eval_{tag}")
         os.makedirs(eval_dir, exist_ok=True)
-        base_env.enable_render(True)
+        record = bool(cfg.get("eval_record_video", False))
+        # rendering in the middle of a GPU-physics run can break PhysX (OmniDrones issue #50),
+        # so metrics and plots are computed without it unless videos are requested
+        base_env.enable_render(record or not cfg.headless)
         base_env.eval()
         env.eval()
         callbacks = {}
 
         def callback_factory(scenario):
-            if not cfg.get("eval_record_video", True):
+            if not record:
                 return None
             callbacks[scenario] = RenderCallback(interval=2)
             return callbacks[scenario]
@@ -208,12 +211,14 @@ def main(cfg):
         if max_iters > 0 and i >= max_iters - 1:
             break
 
+    save_policy_checkpoint(policy, os.path.join(out, "checkpoint_final.pt"))
     logging.info(f"Final Eval at {collector._frames} steps.")
     info = {"env_frames": collector._frames}
-    info.update(evaluate("final"))
+    try:
+        info.update(evaluate("final"))
+    except Exception as e:  # keep the run's outputs even if the final evaluation fails
+        logging.error(f"final evaluation failed: {e!r}; run scripts/evaluate.py on checkpoint_final.pt")
     run.log(info)
-
-    save_policy_checkpoint(policy, os.path.join(out, "checkpoint_final.pt"))
     if cfg.wandb.mode != "disabled":
         wandb.save(os.path.join(out, "checkpoint_final.pt"), base_path=out)
     print(f"[train] done: {os.path.join(out, 'checkpoint_final.pt')}")

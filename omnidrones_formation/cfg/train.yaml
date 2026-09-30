@@ -14,7 +14,8 @@ output_dir: runs/${task.name}_${now:%Y-%m-%d_%H-%M-%S}
 
 # scenarios run at every evaluation (one deterministic episode per env each)
 eval_scenarios: [none, static, dynamic, mixed]
-eval_record_video: true
+eval_record_video: false   # rendering mid-training can crash PhysX (OmniDrones #50); make videos with scripts/evaluate.py
+multi_gpu: false           # Isaac Sim multi-GPU rendering (off: render on one GPU)
 
 viewer:
   resolution: [960, 720]

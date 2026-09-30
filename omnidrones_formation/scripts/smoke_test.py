@@ -67,9 +67,9 @@ def main(cfg):
     if cfg.lite:
         base_env = make_lite_env(cfg)
     else:
-        from omni_drones import init_simulation_app
+        from formation_nav.app import start_simulation_app
 
-        simulation_app = init_simulation_app(cfg)
+        simulation_app = start_simulation_app(cfg)
         from omni_drones.envs.isaac_env import IsaacEnv
 
         import formation_nav.env  # noqa: F401  (registers FormationNav)

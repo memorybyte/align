@@ -1,5 +1,6 @@
 # First-flight check with a scripted policy (scripts/smoke_test.py)
 headless: true
+multi_gpu: false          # Isaac Sim multi-GPU rendering (off: render on one GPU)
 lite: false               # true: pure-PyTorch quadrotor model (formation_nav/quadrotor.py) instead of Isaac Sim
 
 sim: ${task.sim}
