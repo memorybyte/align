@@ -40,31 +40,46 @@ REPORT_KEYS = (
 )
 
 
-def _first_episode(traj: TensorDictBase) -> TensorDictBase:
-    """Stats of each env's first episode (the step at which it ended)."""
-    done = traj.get(("next", "done")).squeeze(-1)  # (E, T)
-    T = done.shape[1]
-    ended = done.any(dim=1)
-    first = torch.where(ended, done.float().argmax(dim=1), torch.full_like(ended, T - 1, dtype=torch.long))
-    idx = torch.arange(done.shape[0], device=done.device)
-    return traj.get(("next", "stats"))[idx, first]
-
-
 @torch.no_grad()
 def rollout_scenario(env, base_env, policy, scenario: str, max_steps: int, formation: Optional[str] = None,
-                     callback=None) -> TensorDictBase:
+                     callback=None, plot_env: int = 0):
+    """
+    Run every env until its first episode ends (at most `max_steps` steps, deterministic
+    actions). Returns (stats, info): each env's stats at the end of its first episode (E,) and
+    env `plot_env`'s first episode (T,) of "info" entries, on the CPU, for the plot.
+
+    The trajectory itself is not stored, so memory does not grow with num_envs x max_steps
+    (512 envs x 800 steps with LSTM states would not fit next to training on a 16 GB GPU).
+    `callback(env, tensordict)` is called after every step, like torchrl's rollout.
+    """
     base_env.set_scenario(scenario)
     base_env.set_formation(formation)
     with set_exploration_type(ExplorationType.MODE):
-        traj = env.rollout(
-            max_steps=max_steps,
-            policy=policy,
-            callback=callback,
-            auto_reset=True,
-            break_when_any_done=False,
-            return_contiguous=False,
-        )
-    return traj
+        td = env.reset()
+        E = td.batch_size[0]
+        finished = torch.zeros(E, dtype=torch.bool, device=td.device)
+        stats = None
+        infos, plot_done = [], False
+        for _ in range(max_steps):
+            td = policy(td)
+            out, td = env.step_and_maybe_reset(td)
+            if callback is not None:
+                callback(env, out)
+            nxt = out.get("next")
+            done = nxt.get("done").reshape(E)
+            step_stats = nxt.get("stats")
+            if stats is None:
+                stats = step_stats.clone()
+            else:
+                running = ~finished  # still in their first episode: keep their latest stats
+                stats[running] = step_stats[running]
+            finished |= done
+            if not plot_done:
+                infos.append(nxt.get("info")[plot_env].to("cpu").clone())
+                plot_done = bool(done[plot_env])
+            if finished.all() and plot_done:
+                break
+    return stats, torch.stack(infos).to_tensordict()
 
 
 @torch.no_grad()
@@ -88,8 +103,7 @@ def evaluate_scenarios(
         core.freeze_difficulty(1.0)  # evaluate at full obstacle difficulty
     for scenario in scenarios:
         callback = callback_factory(scenario) if callback_factory is not None else None
-        traj = rollout_scenario(env, base_env, policy, scenario, max_steps, formation, callback)
-        stats = _first_episode(traj)
+        stats, info = rollout_scenario(env, base_env, policy, scenario, max_steps, formation, callback)
         res = {}
         for k in REPORT_KEYS:
             v = stats.get(k).float().squeeze(-1)
@@ -100,7 +114,7 @@ def evaluate_scenarios(
         res["episodes"] = int(stats.shape[0])
         results[scenario] = res
         if plot_dir is not None:
-            plot_episode(traj, 0, f"{plot_dir}/trajectory_{scenario}.png", title=f"scenario: {scenario}")
+            plot_episode(info, f"{plot_dir}/trajectory_{scenario}.png", title=f"scenario: {scenario}")
     base_env.set_scenario(getattr(getattr(core, "cfg", None), "scenario", "train_mix"))
     base_env.set_formation(None)
     if core is not None:
@@ -147,17 +161,15 @@ def write_video(frames, path: str, fps: float) -> str:
         return gif
 
 
-def plot_episode(traj: TensorDictBase, env_idx: int, path: str, title: str = ""):
-    """Top-down and side view of env `env_idx`'s first episode (uses the "info" entries)."""
+def plot_episode(info: TensorDictBase, path: str, title: str = ""):
+    """Top-down and side view of one episode, given its "info" entries (T,)."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.patches import Circle
 
-    info = traj.get(("next", "info"))[env_idx]
-    done = traj.get(("next", "done"))[env_idx].squeeze(-1)
-    T = int(done.float().argmax().item()) + 1 if done.any() else done.shape[0]
+    T = info.shape[0]
     pos = info.get("drone_pos")[:T].cpu()  # (T, n, 3)
     slots = info.get("slot_pos")[:T].cpu()
     goal = info.get("goal_pos")[0].cpu()
