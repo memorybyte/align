@@ -26,6 +26,43 @@ from omni_drones import init_simulation_app  # noqa: E402
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "cfg")
 
 
+def init_wandb(cfg):
+    """
+    Same as omni_drones.utils.wandb.init_wandb, but works with any wandb version
+    (wandb.util.generate_id no longer exists in recent releases).
+    """
+    import datetime
+    import uuid
+
+    import wandb
+
+    def flatten(d, prefix=""):
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, dict):
+                out.update(flatten(v, f"{prefix}{k}."))
+            else:
+                out[f"{prefix}{k}"] = v
+        return out
+
+    w = cfg.wandb
+    kwargs = dict(
+        project=w.project,
+        group=w.group,
+        entity=w.entity,
+        name=f"{w.run_name}/{datetime.datetime.now():%m-%d_%H-%M}",
+        mode=w.mode,
+        tags=w.tags,
+    )
+    if w.get("run_id"):
+        kwargs.update(id=w.run_id, resume="must")
+    else:
+        kwargs["id"] = uuid.uuid4().hex[:8]
+    run = wandb.init(**kwargs)
+    run.config.update(flatten(OmegaConf.to_container(cfg)), allow_val_change=True)
+    return run
+
+
 def load_policy_checkpoint(policy, path: str):
     ckpt = torch.load(path, map_location="cpu")
     if hasattr(policy, "load_checkpoint"):
@@ -55,7 +92,6 @@ def main(cfg):
     from omni_drones.envs.isaac_env import IsaacEnv
     from omni_drones.learning import ALGOS
     from omni_drones.utils.torchrl import EpisodeStats, RenderCallback, SyncDataCollector
-    from omni_drones.utils.wandb import init_wandb
 
     import formation_nav.env  # noqa: F401  (registers FormationNav)
     from formation_nav.evaluation import evaluate_scenarios, format_table, save_results, write_video
@@ -133,7 +169,7 @@ def main(cfg):
                 )
         for scenario in results:
             png = os.path.join(eval_dir, f"trajectory_{scenario}.png")
-            if os.path.exists(png):
+            if os.path.exists(png) and cfg.wandb.mode != "disabled":
                 info[f"eval/{scenario}/trajectory"] = wandb.Image(png)
         base_env.enable_render(not cfg.headless)
         env.train()
