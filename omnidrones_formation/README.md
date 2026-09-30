@@ -275,11 +275,15 @@ Verified in a CPU-only container, without Isaac Sim:
 * **Wiring:** `env.py` runs against fakes of the Isaac/OmniDrones classes whose drone is the
   rigid-body model. This covers the Hydra configs (both drone presets), the simulated mass,
   the feed-forward path and a short train + evaluate.
-* **Learning** on the point-mass surrogate ([docs/POINTMASS_RESULTS.md](docs/POINTMASS_RESULTS.md),
-  pre-Crazyflie defaults):
+* **Learning on the point-mass surrogate** ([docs/POINTMASS_RESULTS.md](docs/POINTMASS_RESULTS.md)),
+  with the pre-Crazyflie defaults:
   * without obstacles, 88–97 % of episodes take off, form, navigate and hold;
   * with straight waypoints, static pillars stay unsolved (0–3 %);
   * the planned route raises static success to 50 %.
+* **Learning with the Crazyflie defaults, no obstacles, 1.6 M steps:**
+  * point mass: 100 % success, hold ratio 0.75;
+  * rigid-body Crazyflie: 91 % reach the goal, but the policy does not yet stop precisely
+    enough to hold (hold ratio ≈ 0). It needs longer training (same document).
 
 **Not yet run in Isaac Sim itself** (no GPU in the development container). Things to check on
 the first run (`scripts/smoke_test.py`):

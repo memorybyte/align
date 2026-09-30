@@ -165,3 +165,44 @@ python scripts/eval_lite.py --checkpoint runs/E/checkpoint.pt --num_drones 4 --h
 Note: runs A–E used 3–6 pillars (hence `--set "num_static=(3,6)"`). The default is now 2–4:
 the default 8-drone formation is about 3.4 m wide, and with 3–6 pillars in the corridor a
 collision-free route for the rigid formation exists in only 55 % of layouts (78 % with 2–4).
+
+## After the switch to the Crazyflie defaults: point mass vs rigid-body Crazyflie (F, G)
+
+Setup:
+
+* the Crazyflie sizes, staged take-off and crossing-free assignment;
+* 4 drones, formation pool, **no obstacles**, 8–12 m goals, 700-step episodes;
+* 64 envs, 400 iterations × 64 steps (1.6 M env steps), hidden size 128, one seed;
+* F: point-mass dynamics;
+* G: `--dynamics quadrotor`: the rigid-body Crazyflie with OmniDrones' rotor model and
+  downwash, flown by the Lee controller with the downwash feed-forward at 62.5 Hz. This is the
+  closest CPU stand-in for the Isaac Sim env.
+
+| scenario `none`, 32 episodes | F: point mass | G: rigid-body Crazyflie |
+|---|---|---|
+| success | 1.00 | 0.91 |
+| hold ratio | 0.75 | 0.00 |
+| formation error | 0.018 | 0.077 |
+| slot error (episode mean) | 0.48 m | 0.75 m |
+| time to form | 4.8 ± 1.7 s | 5.9 ± 1.7 s |
+| time to goal | 12.5 ± 2.2 s | 16.7 ± 2.8 s |
+| crashed | 0 | 0.06 (out of bounds) |
+
+* **The new defaults are learnable.** The point-mass policy takes off, forms, flies and holds
+  in every episode.
+* **The rigid-body Crazyflie reaches the goal in 91 % of episodes, but does not stop
+  precisely yet.** Its velocity loop settles in about 0.8 s, against 0.15 s for the point mass.
+  With this budget the policy still overshoots its slot during take-off, and keeps drifting
+  about ±0.3 m at the goal. The strict hold criterion (every drone within 0.3 m of its slot and
+  slower than 0.3 m/s) is therefore almost never met.
+* **Training was still improving:** training success rose from 0.03 at iteration 208 to 0.8 at
+  iteration 390. Precise holding needs Isaac-scale training (512 envs, ~100 M steps), or
+  pre-training on the quadrotor backend. The point mass overestimates how fast holding is
+  learned.
+
+![rigid-body Crazyflie, no obstacles](figures/crazyflie_quadrotor_none.png)
+
+```bash
+python scripts/train_lite.py --num_envs 64 --num_drones 4 --iters 400 --max_episode_length 700 \
+    --scenario none --goal_min 8 --goal_max 12 --hidden_size 128 --device cpu [--dynamics quadrotor] --out runs/G
+```
